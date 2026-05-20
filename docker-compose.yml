@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: brainscan_postgres
+    environment:
+      POSTGRES_USER: brainscan
+      POSTGRES_PASSWORD: brainscan_dev
+      POSTGRES_DB: brainscan
+    ports: ["5432:5432"]
+    volumes:
+      - ./.docker-data/postgres:/var/lib/postgresql/data
+      - ./docker/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brainscan -d brainscan"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: brainscan_redis
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: brainscan_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: brainscan
+      MINIO_ROOT_PASSWORD: brainscan_dev_secret
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - ./.docker-data/minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: brainscan_minio_init
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 brainscan brainscan_dev_secret;
+      mc mb --ignore-existing local/screenshots;
+      mc mb --ignore-existing local/localize;
+      mc mb --ignore-existing local/models;
+      mc mb --ignore-existing local/datasets;
+      mc mb --ignore-existing local/mlflow;
+      "
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.18.0
+    container_name: brainscan_mlflow
+    # Официальный образ не содержит psycopg2 — ставим его на старте.
+    # Альтернатива: вынести в Dockerfile, но для dev-стека overhead не оправдан.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        pip install --quiet psycopg2-binary boto3 && \
+        mlflow server \
+          --host 0.0.0.0 \
+          --port 5000 \
+          --backend-store-uri postgresql://brainscan:brainscan_dev@postgres/mlflow \
+          --default-artifact-root s3://mlflow/ \
+          --serve-artifacts
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: brainscan
+      AWS_SECRET_ACCESS_KEY: brainscan_dev_secret
+    ports: ["5000:5000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+
+# Volumes are mounted via bind to ./.docker-data — gitignored, easy to nuke locally

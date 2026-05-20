@@ -1,0 +1,68 @@
+name: BrainScan
+options:
+  bundleIdPrefix: com.brainscan
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+  deploymentTarget:
+    macOS: "12.3"   # минимум для ScreenCaptureKit (Phase C step 5)
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "12.3"
+    # Dev-сборка: ad-hoc-подпись, без team, без hardened runtime.
+    # Перед релизом — отдельный план: notarization + Developer ID.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: NO
+    CLANG_ANALYZER_NONNULL: YES
+    GCC_TREAT_WARNINGS_AS_ERRORS: NO
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+
+targets:
+  BrainScan:
+    type: application
+    platform: macOS
+    sources:
+      - path: BrainScan
+    info:
+      path: BrainScan/Info.plist
+      properties:
+        # Скрываем dock-иконку и Cmd+Tab — приложение живёт в menubar.
+        LSUIElement: true
+        CFBundleDisplayName: BrainScan
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSHumanReadableCopyright: "© 2026 BrainScan"
+        NSPrincipalClass: NSApplication
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.brainscan.client
+        PRODUCT_NAME: BrainScan
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: BrainScan/Info.plist
+
+  BrainScanTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: BrainScanTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.brainscan.client.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: BrainScan
+
+schemes:
+  BrainScan:
+    build:
+      targets:
+        BrainScan: all
+        BrainScanTests: [test]
+    test:
+      targets:
+        - BrainScanTests
+      gatherCoverageData: true

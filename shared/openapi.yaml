@@ -1,0 +1,408 @@
+openapi: 3.0.3
+info:
+  title: BrainScan API
+  description: |
+    MVP API для системы разметки и распознавания опухолей мозга.
+
+    **Scope MVP:** auth, загрузка скриншотов, crop'ов и аннотаций.
+    Detect endpoint существует как stub и возвращает 503 пока нет prod-модели.
+  version: 0.1.0
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local dev
+  - url: https://api.brainscan.example.com/api/v1
+    description: Production (Timeweb Cloud)
+
+tags:
+  - name: auth
+  - name: health
+  - name: models
+  - name: screenshots
+  - name: localize
+  - name: tumor
+  - name: detect
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/register:
+    post:
+      tags: [auth]
+      security: []
+      summary: Регистрация нового специалиста
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRegisterRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokenPair' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Логин по email + password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthLoginRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      summary: Обновить access token по refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /health:
+    get:
+      tags: [health]
+      security: []
+      summary: Проверка статуса сервиса (для connection indicator клиента)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  version: { type: string }
+                  db: { type: string, enum: [ok, degraded] }
+                  storage: { type: string, enum: [ok, degraded] }
+
+  /models/deployed:
+    get:
+      tags: [models]
+      summary: Список активных prod-моделей (для проверки «model not deployed»)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items: { $ref: '#/components/schemas/DeployedModel' }
+
+  /screenshots:
+    post:
+      tags: [screenshots]
+      summary: Загрузка скриншотов всех мониторов одной сессии захвата
+      description: |
+        Multipart: по одному файлу на каждый монитор + JSON-метаданные.
+        Имя поля файла: `screen_{monitor_index}` (например, `screen_0`, `screen_1`).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [meta, screen_0]
+              properties:
+                meta:
+                  type: string
+                  description: JSON-строка с полями device_id, monitor_count, captured_at (ISO8601, опционально)
+                  example: '{"device_id":"abc-uuid","monitor_count":2}'
+                screen_0: { type: string, format: binary }
+                screen_1: { type: string, format: binary }
+            encoding:
+              meta: { contentType: application/json }
+              screen_0: { contentType: image/png }
+              screen_1: { contentType: image/png }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScreenshotResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /localize-images:
+    post:
+      tags: [localize]
+      summary: Загрузка crop'а области (для тренировки детектора опухоли)
+      description: |
+        Multipart: один файл crop'а + JSON-метаданные.
+        Должен ссылаться на screen_id и (опционально) detection_id или annotation_id.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [meta, crop]
+              properties:
+                meta:
+                  type: string
+                  description: |
+                    JSON: { screen_id, monitor_index, bbox: {x,y,w,h},
+                            detection_id?, annotation_id? }.
+                    Хотя бы одно из detection_id/annotation_id обязательно.
+                crop: { type: string, format: binary }
+            encoding:
+              meta: { contentType: application/json }
+              crop: { contentType: image/png }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalizeImageResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /localize-annotations:
+    post:
+      tags: [localize]
+      summary: Создать аннотацию локализации
+      description: |
+        Соответствует CHECK-ограничениям таблицы `localize_annotations`:
+        - action='confirmed' → detection_id обязателен, bbox может быть NULL
+        - action='corrected' → detection_id и bbox обязательны
+        - action='created'   → detection_id NULL, bbox обязателен
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalizeAnnotationCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalizeAnnotationResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /tumor-annotations:
+    post:
+      tags: [tumor]
+      summary: Создать аннотацию опухоли
+      description: |
+        Соответствует CHECK-ограничениям таблицы `tumor_annotations`:
+        - action='confirmed' → detection_id обязателен (bbox NULL)
+        - action='corrected' → detection_id обязателен (bbox может быть NULL,
+                               что означает «модель ошиблась, опухоли нет»)
+        - action='created'   → detection_id NULL, bbox обязателен
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TumorAnnotationCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TumorAnnotationResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /detect:
+    post:
+      tags: [detect]
+      summary: Запуск автодетекции (заглушка в MVP)
+      description: В MVP всегда возвращает 503 — нет deployed моделей.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [screenshot_id]
+              properties:
+                screenshot_id: { type: string, format: uuid }
+      responses:
+        '503':
+          description: No model deployed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, enum: [no_model_deployed] }
+                  message: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    BBox:
+      type: object
+      required: [x, y, w, h]
+      properties:
+        x: { type: integer, minimum: 0 }
+        y: { type: integer, minimum: 0 }
+        w: { type: integer, minimum: 1 }
+        h: { type: integer, minimum: 1 }
+
+    AuthRegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+        full_name: { type: string }
+
+    AuthLoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+
+    AuthTokenPair:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, enum: [bearer] }
+        expires_in: { type: integer, description: TTL access токена в секундах }
+
+    DeployedModel:
+      type: object
+      required: [id, model_type, version, deployed_at]
+      properties:
+        id: { type: string, format: uuid }
+        model_type: { type: string, enum: [localize, tumor] }
+        version: { type: string }
+        deployed_at: { type: string, format: date-time }
+
+    ScreenshotResponse:
+      type: object
+      required: [id, captured_at, monitor_count, screen_paths]
+      properties:
+        id: { type: string, format: uuid }
+        captured_at: { type: string, format: date-time }
+        monitor_count: { type: integer }
+        screen_paths:
+          type: object
+          additionalProperties: { type: string }
+          example: { "0": "s3://brainscan/screens/abc/screen_0.png" }
+
+    LocalizeImageResponse:
+      type: object
+      required: [id, screen_id, monitor_index, bbox, localize_path, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        screen_id: { type: string, format: uuid }
+        detection_id: { type: string, format: uuid, nullable: true }
+        annotation_id: { type: string, format: uuid, nullable: true }
+        monitor_index: { type: integer }
+        bbox: { $ref: '#/components/schemas/BBox' }
+        localize_path: { type: string }
+        created_at: { type: string, format: date-time }
+
+    LocalizeAnnotationCreate:
+      type: object
+      required: [screen_id, monitor_index, action]
+      properties:
+        screen_id: { type: string, format: uuid }
+        detection_id: { type: string, format: uuid, nullable: true }
+        monitor_index: { type: integer }
+        bbox:
+          oneOf:
+            - $ref: '#/components/schemas/BBox'
+            - type: 'null'
+        action: { type: string, enum: [confirmed, corrected, created] }
+
+    LocalizeAnnotationResponse:
+      allOf:
+        - $ref: '#/components/schemas/LocalizeAnnotationCreate'
+        - type: object
+          required: [id, annotator_id, annotated_at]
+          properties:
+            id: { type: string, format: uuid }
+            annotator_id: { type: string }
+            annotated_at: { type: string, format: date-time }
+
+    TumorAnnotationCreate:
+      type: object
+      required: [localize_image_id, action]
+      properties:
+        localize_image_id: { type: string, format: uuid }
+        detection_id: { type: string, format: uuid, nullable: true }
+        bbox:
+          oneOf:
+            - $ref: '#/components/schemas/BBox'
+            - type: 'null'
+        action: { type: string, enum: [confirmed, corrected, created] }
+
+    TumorAnnotationResponse:
+      allOf:
+        - $ref: '#/components/schemas/TumorAnnotationCreate'
+        - type: object
+          required: [id, annotator_id, annotated_at]
+          properties:
+            id: { type: string, format: uuid }
+            annotator_id: { type: string }
+            annotated_at: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+
+  responses:
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Unprocessable entity
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
