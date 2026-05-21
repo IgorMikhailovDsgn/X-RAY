@@ -1,18 +1,23 @@
 import AppKit
 
-/// Компактная навигация по нескольким bbox одной сущности: ▲ / индекс / ▼.
-/// Появляется, когда у сущности больше одного bbox. Цифра — индекс активного.
+/// Триггер выпадающего списка bbox одной сущности: шеврон + индекс активного.
+/// Появляется, когда у сущности больше одного bbox. Клик раскрывает/сворачивает
+/// список плашек (`BboxListView`) над тулбаром.
 final class NavView: NSView {
-    var onPrev: (() -> Void)?   // ▲ — предыдущий
-    var onNext: (() -> Void)?   // ▼ — следующий
+    var onToggle: (() -> Void)?
 
-    private let upButton = NavView.chevron("chevron.up")
-    private let downButton = NavView.chevron("chevron.down")
+    private let chevron = NSImageView()
     private let indexField = NSTextField(labelWithString: "1")
+    private var isOpen = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: NSRect(x: 0, y: 0, width: 28, height: 64))
         wantsLayer = true
+
+        chevron.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: nil)
+        chevron.contentTintColor = NSColor.white.withAlphaComponent(0.7)
+        chevron.imageScaling = .scaleProportionallyDown
+        chevron.translatesAutoresizingMaskIntoConstraints = false
 
         indexField.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
         indexField.textColor = NSColor.white.withAlphaComponent(0.85)
@@ -21,7 +26,7 @@ final class NavView: NSView {
         indexField.drawsBackground = false
         indexField.isEditable = false
 
-        let stack = NSStackView(views: [upButton, indexField, downButton])
+        let stack = NSStackView(views: [chevron, indexField])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 2
@@ -30,12 +35,9 @@ final class NavView: NSView {
         NSLayoutConstraint.activate([
             stack.centerXAnchor.constraint(equalTo: centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 12),
+            chevron.heightAnchor.constraint(equalToConstant: 10),
         ])
-
-        upButton.target = self
-        upButton.action = #selector(prevTapped)
-        downButton.target = self
-        downButton.action = #selector(nextTapped)
     }
 
     @available(*, unavailable)
@@ -43,21 +45,17 @@ final class NavView: NSView {
 
     func setIndex(_ index: Int) { indexField.stringValue = "\(index)" }
 
-    @objc private func prevTapped() { onPrev?() }
-    @objc private func nextTapped() { onNext?() }
-
-    private static func chevron(_ symbol: String) -> NSButton {
-        let button = NSButton()
-        button.isBordered = false
-        button.bezelStyle = .regularSquare
-        button.imageScaling = .scaleProportionallyDown
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        button.contentTintColor = NSColor.white.withAlphaComponent(0.7)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 16),
-            button.heightAnchor.constraint(equalToConstant: 12),
-        ])
-        return button
+    func setOpen(_ open: Bool) {
+        guard isOpen != open else { return }
+        isOpen = open
+        chevron.image = NSImage(systemSymbolName: open ? "chevron.down" : "chevron.up",
+                                accessibilityDescription: nil)
     }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func mouseUp(with _: NSEvent) { onToggle?() }
 }

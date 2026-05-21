@@ -25,12 +25,16 @@ enum ValidationEngine {
         }
 
         // 2. Tumor должен лежать внутри какого-либо region на том же мониторе.
-        for t in tumors where errors[t.id] == nil {
-            let containedByRegion = regions.contains {
-                $0.monitorIndex == t.monitorIndex && $0.rect.contains(t.rect)
-            }
-            if !containedByRegion {
-                errors[t.id] = .tumorOutsideRegion
+        //    Проверяем только когда region уже размечен — без region tumor не красный
+        //    (просто Send заблокирован, т.к. region обязателен).
+        if !regions.isEmpty {
+            for t in tumors where errors[t.id] == nil {
+                let containedByRegion = regions.contains {
+                    $0.monitorIndex == t.monitorIndex && $0.rect.contains(t.rect)
+                }
+                if !containedByRegion {
+                    errors[t.id] = .tumorOutsideRegion
+                }
             }
         }
 

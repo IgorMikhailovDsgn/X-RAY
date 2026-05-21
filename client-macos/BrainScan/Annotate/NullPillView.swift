@@ -34,15 +34,14 @@ final class NullPillView: NSView {
         clearButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(clearButton)
 
+        labelView.alignment = .center
         clearWidth = clearButton.widthAnchor.constraint(equalToConstant: 12)
         NSLayoutConstraint.activate([
-            labelView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            labelView.centerXAnchor.constraint(equalTo: centerXAnchor),
             labelView.centerYAnchor.constraint(equalTo: centerYAnchor),
             clearButton.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             clearButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             clearButton.heightAnchor.constraint(equalToConstant: 12),
-            labelView.trailingAnchor.constraint(lessThanOrEqualTo: clearButton.leadingAnchor,
-                                                constant: -6),
             clearWidth,
         ])
     }

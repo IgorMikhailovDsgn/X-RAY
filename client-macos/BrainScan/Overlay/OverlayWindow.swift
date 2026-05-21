@@ -1,8 +1,10 @@
 import AppKit
 
-/// Borderless-окно оверлея на один монитор: замороженный скриншот фоном +
-/// `BboxCanvasView` поверх. Уровень `.screenSaver` — над всеми обычными окнами
-/// и нашим floating-виджетом. Перехватывает все клики и клавиатуру (Esc/hotkeys).
+/// Borderless-окно оверлея на один монитор: прозрачное окно поверх живого экрана,
+/// `BboxCanvasView` рисует затемнение (02091A 50%) с «дырками» 0% внутри bbox.
+/// Уровень `.screenSaver` — над всеми обычными окнами и нашим floating-виджетом.
+/// Перехватывает все клики и клавиатуру (Esc/hotkeys). Реальный скриншот делается
+/// отдельно на Send, не здесь.
 final class OverlayWindow: NSWindow {
     let canvas: BboxCanvasView
 
@@ -25,12 +27,6 @@ final class OverlayWindow: NSWindow {
 
         let container = NSView(frame: NSRect(origin: .zero, size: snapshot.frame.size))
         container.wantsLayer = true
-
-        let imageView = NSImageView(frame: container.bounds)
-        imageView.image = NSImage(cgImage: snapshot.image, size: snapshot.frame.size)
-        imageView.imageScaling = .scaleAxesIndependently
-        imageView.autoresizingMask = [.width, .height]
-        container.addSubview(imageView)
 
         canvas.frame = container.bounds
         canvas.autoresizingMask = [.width, .height]

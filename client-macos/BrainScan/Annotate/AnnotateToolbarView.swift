@@ -21,10 +21,9 @@ final class AnnotateToolbarView: NSView {
     var onMarkNullTumor: (() -> Void)?
     var onClearTumor: (() -> Void)?
     var onRemoveTumor: (() -> Void)?
-    var onRegionPrev: (() -> Void)?
-    var onRegionNext: (() -> Void)?
-    var onTumorPrev: (() -> Void)?
-    var onTumorNext: (() -> Void)?
+    var onRegionToggleList: (() -> Void)?
+    var onTumorToggleList: (() -> Void)?
+    var onHoverBbox: ((UUID?) -> Void)?    // наведение на инлайн-плашку → подсветка bbox
     var onSend: (() -> Void)?
 
     private let outerLayer = CALayer()
@@ -100,15 +99,27 @@ final class AnnotateToolbarView: NSView {
         markNullRegionButton.onClick = { [weak self] in self?.onMarkNullRegion?() }
         regionNullPill.onClear = { [weak self] in self?.onClearRegion?() }
         regionPlate.onClear = { [weak self] in self?.onRemoveRegion?() }
-        regionNav.onPrev = { [weak self] in self?.onRegionPrev?() }
-        regionNav.onNext = { [weak self] in self?.onRegionNext?() }
         addTumorButton.onClick = { [weak self] in self?.onAddTumor?() }
         markNullTumorButton.onClick = { [weak self] in self?.onMarkNullTumor?() }
         tumorNullPill.onClear = { [weak self] in self?.onClearTumor?() }
         tumorPlate.onClear = { [weak self] in self?.onRemoveTumor?() }
-        tumorNav.onPrev = { [weak self] in self?.onTumorPrev?() }
-        tumorNav.onNext = { [weak self] in self?.onTumorNext?() }
+        regionNav.onToggle = { [weak self] in self?.onRegionToggleList?() }
+        tumorNav.onToggle = { [weak self] in self?.onTumorToggleList?() }
+        regionPlate.onHover = { [weak self] id in self?.onHoverBbox?(id) }
+        tumorPlate.onHover = { [weak self] id in self?.onHoverBbox?(id) }
         sendButton.onClick = { [weak self] in self?.onSend?() }
+    }
+
+    /// Кадр триггера списка (region/tumor) в экранных координатах — для позиционирования
+    /// выпадающей панели. nil, если триггер сейчас не показан (< 2 bbox).
+    func navScreenFrame(forTumor: Bool) -> NSRect? {
+        let nav = forTumor ? tumorNav : regionNav
+        guard nav.superview != nil, let window else { return nil }
+        return window.convertToScreen(nav.convert(nav.bounds, to: nil))
+    }
+
+    func setListOpen(forTumor: Bool, _ open: Bool) {
+        (forTumor ? tumorNav : regionNav).setOpen(open)
     }
 
     private func constrainFixedSizes() {
@@ -117,8 +128,8 @@ final class AnnotateToolbarView: NSView {
             size(b, w: 82)
         }
         size(sendButton, w: 72)
-        size(regionPlate, w: 132)
-        size(tumorPlate, w: 132)
+        size(regionPlate, w: 126)
+        size(tumorPlate, w: 126)
         size(regionNullPill, w: 116)
         size(tumorNullPill, w: 116)
         size(regionNav, w: 28)
@@ -152,11 +163,12 @@ final class AnnotateToolbarView: NSView {
 
     // MARK: - Rebuild from model
 
-    func apply(_ model: AnnotationModel, invalid: [UUID: ValidationError], draftRect: CGRect) {
+    func apply(_ model: AnnotationModel, invalid: [UUID: ValidationError],
+               draftRect: CGRect, hoveredId: UUID?) {
         var views: [NSView] = [backButton, sepAfterBack]
-        views += regionSegment(model, invalid: invalid, draftRect: draftRect)
+        views += regionSegment(model, invalid: invalid, draftRect: draftRect, hoveredId: hoveredId)
         views.append(sepBetween)
-        views += tumorSegment(model, invalid: invalid, draftRect: draftRect)
+        views += tumorSegment(model, invalid: invalid, draftRect: draftRect, hoveredId: hoveredId)
         views += [sepBeforeSend, sendButton]
         setArranged(views)
 
@@ -171,7 +183,7 @@ final class AnnotateToolbarView: NSView {
     }
 
     private func regionSegment(_ model: AnnotationModel, invalid: [UUID: ValidationError],
-                               draftRect: CGRect) -> [NSView] {
+                               draftRect: CGRect, hoveredId: UUID?) -> [NSView] {
         if case .null = model.regionState {
             regionNullPill.setShowsClear(true)
             return [regionNullPill]
@@ -182,12 +194,17 @@ final class AnnotateToolbarView: NSView {
         let committed = model.regionState.bboxes
 
         if model.activeTool == .addRegion {
+            regionPlate.bboxId = nil
             regionPlate.configure(rect: draftRect, isActive: true, isInvalid: false, showsClear: false)
+            regionPlate.setExternallyLit(false)
             seg.append(regionPlate)
-            if !committed.isEmpty { regionNav.setIndex(max(model.activeRegionIndex, 1)); seg.append(regionNav) }
+            // Список доступен только при ≥2 уже зафиксированных bbox.
+            if committed.count >= 2 { regionNav.setIndex(max(model.activeRegionIndex, 1)); seg.append(regionNav) }
         } else if let active = model.activeRegionBbox {
+            regionPlate.bboxId = active.id
             regionPlate.configure(rect: active.rect, isActive: false,
                                   isInvalid: invalid[active.id] != nil, showsClear: true)
+            regionPlate.setExternallyLit(active.id == hoveredId)
             seg.append(regionPlate)
             if committed.count >= 2 { regionNav.setIndex(model.activeRegionIndex); seg.append(regionNav) }
         } else {
@@ -198,7 +215,7 @@ final class AnnotateToolbarView: NSView {
     }
 
     private func tumorSegment(_ model: AnnotationModel, invalid: [UUID: ValidationError],
-                              draftRect: CGRect) -> [NSView] {
+                              draftRect: CGRect, hoveredId: UUID?) -> [NSView] {
         if case .null = model.tumorState {
             tumorNullPill.setShowsClear(model.tumorControlsEnabled)   // × только при Region≠null
             return [tumorNullPill]
@@ -209,12 +226,16 @@ final class AnnotateToolbarView: NSView {
         let committed = model.tumorState.bboxes
 
         if model.activeTool == .addTumor {
+            tumorPlate.bboxId = nil
             tumorPlate.configure(rect: draftRect, isActive: true, isInvalid: false, showsClear: false)
+            tumorPlate.setExternallyLit(false)
             seg.append(tumorPlate)
-            if !committed.isEmpty { tumorNav.setIndex(max(model.activeTumorIndex, 1)); seg.append(tumorNav) }
+            if committed.count >= 2 { tumorNav.setIndex(max(model.activeTumorIndex, 1)); seg.append(tumorNav) }
         } else if let active = model.activeTumorBbox {
+            tumorPlate.bboxId = active.id
             tumorPlate.configure(rect: active.rect, isActive: false,
                                  isInvalid: invalid[active.id] != nil, showsClear: true)
+            tumorPlate.setExternallyLit(active.id == hoveredId)
             seg.append(tumorPlate)
             if committed.count >= 2 { tumorNav.setIndex(model.activeTumorIndex); seg.append(tumorNav) }
         } else {

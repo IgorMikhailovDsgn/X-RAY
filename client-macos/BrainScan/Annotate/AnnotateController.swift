@@ -13,10 +13,15 @@ final class AnnotateController {
     private let toolbar = AnnotateToolbarView()
     private let overlay = OverlayController()
     private let panel: NSPanel
+    private let dropdownPanel: NSPanel
+    private let listView = BboxListView()
+    /// Какой список открыт: nil — закрыт, true — tumor, false — region.
+    private var openTumorList: Bool?
     private var keyMonitor: Any?
     private var invalid: [UUID: ValidationError] = [:]
     private var draftRect: CGRect = .zero
     private let dotOverflow: CGFloat = 8   // == AnnotateToolbarView.dotOverflow (тело меньше панели)
+    private let dropdownGap: CGFloat = 8   // зазор между тулбаром и нижней плашкой списка
 
     init() {
         panel = NSPanel(
@@ -35,9 +40,33 @@ final class AnnotateController {
         panel.isMovableByWindowBackground = true   // перетаскивание как у Default-виджета
         panel.contentView = toolbar
 
+        dropdownPanel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: BboxListView.plateWidth, height: 56),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false
+        )
+        dropdownPanel.isFloatingPanel = true
+        dropdownPanel.level = panel.level
+        dropdownPanel.isOpaque = false
+        dropdownPanel.backgroundColor = .clear
+        dropdownPanel.hasShadow = false
+        dropdownPanel.hidesOnDeactivate = false
+        dropdownPanel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        dropdownPanel.contentView = listView
+
         wireToolbar()
         wireOverlay()
+        wireDropdown()
         model.onChange = { [weak self] in self?.refresh() }
+    }
+
+    private func wireDropdown() {
+        listView.onSelect = { [weak self] id in
+            self?.model.select(id: id)
+            self?.closeDropdown()
+        }
+        listView.onRemove = { [weak self] id in self?.model.removeBbox(id: id) }
+        listView.onHover = { [weak self] id in self?.highlightBbox(id) }
     }
 
     // MARK: - Lifecycle
@@ -51,6 +80,11 @@ final class AnnotateController {
         refresh()
         positionToolbar(bodyCenter: bodyCenter)
         panel.orderFrontRegardless()
+        // Затемняющий overlay появляется сразу при входе в режим разметки.
+        overlay.present()
+        NSApp.activate(ignoringOtherApps: true)   // LSUIElement: нужно для приёма клавиш
+        panel.orderFrontRegardless()              // тулбар над overlay
+        refresh()
         installKeyMonitor()
     }
 
@@ -59,6 +93,7 @@ final class AnnotateController {
         let bodyCenter = NSPoint(x: f.minX + (f.width - dotOverflow) / 2,
                                  y: f.minY + (f.height - dotOverflow) / 2)
         removeKeyMonitor()
+        closeDropdown()
         overlay.dismiss()
         panel.orderOut(nil)
         onFinished?(bodyCenter)
@@ -82,11 +117,49 @@ final class AnnotateController {
             guard let id = self?.model.activeTumorId else { return }
             self?.model.removeBbox(id: id)
         }
-        toolbar.onRegionPrev = { [weak self] in self?.model.cycleRegion(-1) }
-        toolbar.onRegionNext = { [weak self] in self?.model.cycleRegion(1) }
-        toolbar.onTumorPrev = { [weak self] in self?.model.cycleTumor(-1) }
-        toolbar.onTumorNext = { [weak self] in self?.model.cycleTumor(1) }
+        toolbar.onRegionToggleList = { [weak self] in self?.toggleList(forTumor: false) }
+        toolbar.onTumorToggleList = { [weak self] in self?.toggleList(forTumor: true) }
+        toolbar.onHoverBbox = { [weak self] id in self?.highlightBbox(id) }
         toolbar.onSend = { [weak self] in self?.send() }
+    }
+
+    // MARK: - Подсветка и выпадающий список
+
+    private func highlightBbox(_ id: UUID?) {
+        overlay.highlight(id)
+        refresh()
+    }
+
+    private func toggleList(forTumor: Bool) {
+        if openTumorList == forTumor { closeDropdown() }
+        else { openTumorList = forTumor; updateDropdown() }
+    }
+
+    private func updateDropdown() {
+        guard let isTumor = openTumorList else { closeDropdown(); return }
+        let boxes = isTumor ? model.tumorState.bboxes : model.regionState.bboxes
+        let activeId = isTumor ? model.activeTumorId : model.activeRegionId
+        guard boxes.count >= 2, let anchor = toolbar.navScreenFrame(forTumor: isTumor) else {
+            closeDropdown(); return
+        }
+        listView.setItems(boxes, activeId: activeId,
+                          hoveredId: overlay.currentHoveredId, invalid: invalid)
+        let width = BboxListView.plateWidth
+        let height = listView.fittingHeight(count: boxes.count)
+        let origin = NSPoint(x: anchor.midX - width / 2, y: anchor.maxY + dropdownGap)
+        dropdownPanel.setFrame(NSRect(origin: origin, size: CGSize(width: width, height: height)),
+                               display: true)
+        if dropdownPanel.parent == nil { panel.addChildWindow(dropdownPanel, ordered: .above) }
+        dropdownPanel.orderFrontRegardless()
+        toolbar.setListOpen(forTumor: isTumor, true)
+        toolbar.setListOpen(forTumor: !isTumor, false)
+    }
+
+    private func closeDropdown() {
+        if let isTumor = openTumorList { toolbar.setListOpen(forTumor: isTumor, false) }
+        openTumorList = nil
+        if dropdownPanel.parent != nil { panel.removeChildWindow(dropdownPanel) }
+        dropdownPanel.orderOut(nil)
     }
 
     private func wireOverlay() {
@@ -96,6 +169,9 @@ final class AnnotateController {
             self.draftRect = .zero
             if tool == .addRegion { self.model.appendRegionBbox(bbox) }
             else { self.model.appendTumorBbox(bbox) }
+            // Сразу выходим из инструмента → idle-режим, нарисованный bbox можно
+            // двигать/растягивать. Новый рисуем повторным кликом Add.
+            self.model.cancelTool()
         }
         overlay.onExitDrawMode = { [weak self] in self?.model.cancelTool() }
         overlay.onSelect = { [weak self] id in
@@ -111,43 +187,11 @@ final class AnnotateController {
     }
 
     private func beginTool(_ tool: AnnotationTool) {
-        Task { @MainActor in
-            await ensureOverlayPresented()
-            guard overlay.isPresented else { return }
-            draftRect = .zero
-            if tool == .addRegion { model.activateAddRegion() }
-            else { model.activateAddTumor() }
-        }
-    }
-
-    @MainActor
-    private func ensureOverlayPresented() async {
-        guard !overlay.isPresented else { return }
-        do {
-            try await overlay.present()
-            NSApp.activate(ignoringOtherApps: true)   // LSUIElement: нужно для приёма клавиш
-            panel.orderFrontRegardless()
-        } catch {
-            presentPermissionAlert()
-        }
-    }
-
-    private func presentPermissionAlert() {
-        // Системный промпт уже показывает сам ScreenCaptureKit при «not determined»,
-        // здесь — только подсказка про System Settings + обязательный перезапуск.
-        let alert = NSAlert()
-        alert.messageText = "Screen Recording permission required"
-        alert.informativeText = "Enable BrainScan under System Settings → Privacy & Security → "
-            + "Screen Recording, then quit and reopen BrainScan (macOS applies the grant only "
-            + "after relaunch)."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            let url = URL(string:
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
-            NSWorkspace.shared.open(url)
-        }
+        closeDropdown()
+        guard overlay.isPresented else { return }
+        draftRect = .zero
+        if tool == .addRegion { model.activateAddRegion() }
+        else { model.activateAddTumor() }
     }
 
     // MARK: - Refresh
@@ -155,9 +199,11 @@ final class AnnotateController {
     private func refresh() {
         invalid = ValidationEngine.validate(region: model.regionState, tumor: model.tumorState)
         model.invalidBboxIds = Set(invalid.keys)
-        toolbar.apply(model, invalid: invalid, draftRect: draftRect)
+        toolbar.apply(model, invalid: invalid, draftRect: draftRect,
+                      hoveredId: overlay.currentHoveredId)
         resizePanelKeepingCenter()
         if overlay.isPresented { overlay.render(model: model, invalid: invalid) }
+        if openTumorList != nil { updateDropdown() }
     }
 
     /// Ширина тулбара меняется при смене состава контролов — растём/сжимаемся

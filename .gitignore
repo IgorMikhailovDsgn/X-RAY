@@ -57,6 +57,7 @@ xcuserdata/
 *.moved-aside
 *.pbxuser
 !default.pbxuser
+*.profraw
 *.mode1v3
 !default.mode1v3
 *.mode2v3

@@ -3,11 +3,14 @@ import CoreImage
 import CoreMedia
 import ScreenCaptureKit
 
-/// Замороженный снимок одного дисплея в момент открытия оверлея.
+/// Геометрия + (опционально) пиксели одного дисплея. При показе оверлея
+/// заполняется только геометрия (`image == nil`) — захват экрана делается
+/// отдельно в момент Send, без замороженного фона.
 struct DisplaySnapshot {
     let displayID: CGDirectDisplayID
     let monitorIndex: Int
-    let image: CGImage
+    /// Пиксели дисплея. nil, пока не сделан реальный захват (на Send).
+    let image: CGImage?
     /// Глобальный frame дисплея в logical-точках (как у NSScreen.frame).
     let frame: CGRect
     /// dpi_scale_factor монитора (2.0 для Retina) — для конвертации в physical.

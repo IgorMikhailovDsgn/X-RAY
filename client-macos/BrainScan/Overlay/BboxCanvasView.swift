@@ -23,7 +23,9 @@ struct RenderBox {
 final class BboxCanvasView: NSView {
     let monitorIndex: Int
 
-    var activeTool: AnnotationTool = .none { didSet { resetCursorAndState() } }
+    var activeTool: AnnotationTool = .none {
+        didSet { if oldValue != activeTool { resetCursorAndState() } }   // иначе render обрывает drag
+    }
 
     // Колбэки в контроллер.
     var onDrawCommitted: ((_ rect: CGRect, _ tool: AnnotationTool) -> Void)?
@@ -42,7 +44,8 @@ final class BboxCanvasView: NSView {
     private var dragContext: DragContext?
 
     private let minSide: CGFloat = 10
-    private let handleSize: CGFloat = 8
+    private let handleSize: CGFloat = 8        // визуальный размер ручки
+    private let handleHitSize: CGFloat = 18    // зона захвата ручки (больше визуальной)
     private let hitSlop: CGFloat = 6
 
     init(monitorIndex: Int) {
@@ -57,9 +60,14 @@ final class BboxCanvasView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
+    /// Доставлять клик во вьюху, даже если оверлей-окно не key (key — панель тулбара).
+    /// Иначе первый mouseDown «съедается» на активацию окна и drag (move/resize) не стартует.
+    override func acceptsFirstMouse(for _: NSEvent?) -> Bool { true }
+
     func setBoxes(_ boxes: [RenderBox]) {
         self.boxes = boxes
         needsDisplay = true
+        window?.invalidateCursorRects(for: self)   // геометрия изменилась → пересобрать курсор-rect'ы
     }
 
     // MARK: - Cursor / tracking
@@ -72,13 +80,6 @@ final class BboxCanvasView: NSView {
         needsDisplay = true
     }
 
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        if activeTool != .none {
-            addCursorRect(bounds, cursor: .crosshair)
-        }
-    }
-
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
@@ -89,6 +90,25 @@ final class BboxCanvasView: NSView {
         )
         addTrackingArea(area)
         trackingArea = area
+    }
+
+    /// Курсоры через канонические курсор-rect'ы (надёжнее cursorUpdate): crosshair
+    /// при активном инструменте, resize на ручках активного bbox, «рука» на телах.
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if activeTool != .none {
+            addCursorRect(bounds, cursor: .crosshair)
+            return
+        }
+        for box in boxes { addCursorRect(box.rect, cursor: .openHand) }
+        // Ручки всех активных боксов; tumor добавляем последним → его ручки выигрывают
+        // при перекрытии (последний addCursorRect имеет приоритет).
+        for active in boxes.filter({ $0.isActive }) {
+            for mode in ResizeMode.allCases {
+                addCursorRect(mode.handleRect(for: active.rect, size: handleHitSize),
+                              cursor: mode.cursor)
+            }
+        }
     }
 
     // MARK: - Mouse
@@ -105,16 +125,19 @@ final class BboxCanvasView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        // Ручки активного bbox можно тянуть в любом режиме — в т.ч. во время рисования,
+        // чтобы подправить только что нарисованный прямоугольник.
+        if let ctx = resizeContext(at: p) { dragContext = ctx; return }
+
         if activeTool != .none {
+            // По пустому месту/внутри — рисуем новый bbox (tumor рисуется внутри region).
             drawOrigin = p
             draftRect = CGRect(origin: p, size: .zero)
             onDraftChanged?(.zero)
             return
         }
-        // idle: ручка resize активного → resize; тело bbox → move; пусто → снять выбор.
-        if let ctx = resizeContext(at: p) {
-            dragContext = ctx
-        } else if let box = hitTestBox(at: p) {
+        // idle: тело bbox → выбрать + move; пусто → снять выбор.
+        if let box = hitTestBox(at: p) {
             onBboxSelected?(box.id)
             dragContext = DragContext(id: box.id, mode: .move,
                                       startMouse: p, startRect: box.rect)
@@ -125,20 +148,22 @@ final class BboxCanvasView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        // Редактирование (resize/move) активного bbox имеет приоритет над рисованием.
+        if let ctx = dragContext {
+            let dx = p.x - ctx.startMouse.x
+            let dy = p.y - ctx.startMouse.y
+            let newRect = ctx.mode == .move
+                ? ctx.startRect.offsetBy(dx: dx, dy: dy)
+                : ctx.mode.resized(ctx.startRect, dx: dx, dy: dy)
+            onBboxUpdated?(ctx.id, newRect)
+            return
+        }
         if activeTool != .none, let origin = drawOrigin {
             let rect = rectBetween(origin, p)
             draftRect = rect
             onDraftChanged?(rect)
             needsDisplay = true
-            return
         }
-        guard let ctx = dragContext else { return }
-        let dx = p.x - ctx.startMouse.x
-        let dy = p.y - ctx.startMouse.y
-        let newRect = ctx.mode == .move
-            ? ctx.startRect.offsetBy(dx: dx, dy: dy)
-            : ctx.mode.resized(ctx.startRect, dx: dx, dy: dy)
-        onBboxUpdated?(ctx.id, newRect)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -168,12 +193,15 @@ final class BboxCanvasView: NSView {
     }
 
     private func resizeContext(at p: CGPoint) -> DragContext? {
-        guard let active = boxes.first(where: { $0.isActive }) else { return nil }
-        for mode in ResizeMode.allCases {
-            let handle = mode.handleRect(for: active.rect, size: handleSize)
-            if handle.contains(p) {
-                return DragContext(id: active.id, mode: mode,
-                                   startMouse: p, startRect: active.rect)
+        // Активными могут быть оба бокса (region+tumor) одновременно. Проверяем ручки
+        // всех активных, начиная с верхнего (tumor поверх region при перекрытии ручек).
+        for active in boxes.filter({ $0.isActive }).reversed() {
+            for mode in ResizeMode.allCases {
+                let handle = mode.handleRect(for: active.rect, size: handleHitSize)
+                if handle.contains(p) {
+                    return DragContext(id: active.id, mode: mode,
+                                       startMouse: p, startRect: active.rect)
+                }
             }
         }
         return nil
@@ -188,14 +216,27 @@ final class BboxCanvasView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        guard let ctx = NSGraphicsContext.current else { return }
+
+        // 1. Затемняющий скрим (#02091A 50%) поверх всего живого экрана.
+        Self.scrimColor.setFill()
+        NSBezierPath(rect: bounds).fill()
+
+        // 2. «Дырки» 0% opacity внутри каждого bbox и текущего черновика —
+        //    .copy с прозрачным цветом вырезает скрим, открывая живой экран.
+        ctx.compositingOperation = .copy
+        NSColor.clear.setFill()
+        for box in boxes { NSBezierPath(rect: box.rect).fill() }
+        if let draft = draftRect { NSBezierPath(rect: draft).fill() }
+        ctx.compositingOperation = .sourceOver
+
+        // 3. Обводки/подписи/ручки поверх.
         for box in boxes { drawBox(box) }
         if let draft = draftRect {
             let color = activeTool == .addTumor ? Self.tumorColor : Self.regionColor
             color.withAlphaComponent(0.9).setStroke()
-            color.withAlphaComponent(0.12).setFill()
             let path = NSBezierPath(rect: draft)
             path.lineWidth = 2
-            path.fill()
             path.stroke()
         }
     }
@@ -205,11 +246,10 @@ final class BboxCanvasView: NSView {
             ? Self.invalidColor
             : (box.kind == .region ? Self.regionColor : Self.tumorColor)
 
-        baseColor.withAlphaComponent(0.10).setFill()
+        // Внутренность — прозрачная «дырка» (вырезана в скриме), заливки нет.
         baseColor.setStroke()
         let path = NSBezierPath(rect: box.rect)
         path.lineWidth = box.isActive ? 3 : 2
-        path.fill()
         path.stroke()
 
         drawLabel(for: box, color: baseColor)
@@ -248,6 +288,9 @@ final class BboxCanvasView: NSView {
     private static let regionColor = NSColor.systemTeal
     private static let tumorColor = NSColor.systemOrange
     private static let invalidColor = NSColor.systemRed
+    /// Затемнение живого экрана вне bbox: #02091A 50%.
+    private static let scrimColor = NSColor(srgbRed: 0x02 / 255.0, green: 0x09 / 255.0,
+                                            blue: 0x1A / 255.0, alpha: 0.5)
 }
 
 // MARK: - Drag/resize support
@@ -282,6 +325,17 @@ private enum ResizeMode: CaseIterable {
         case .move:        point = CGPoint(x: r.midX, y: r.midY)
         }
         return CGRect(x: point.x - size / 2, y: point.y - size / 2, width: size, height: size)
+    }
+
+    /// Курсор для idle-наведения на ручку. Диагональных resize-курсоров в публичном
+    /// AppKit нет → углам даём crosshair, сторонам — горизонтальный/вертикальный.
+    var cursor: NSCursor {
+        switch self {
+        case .left, .right:        return .resizeLeftRight
+        case .top, .bottom:        return .resizeUpDown
+        case .topLeft, .topRight, .bottomLeft, .bottomRight: return .crosshair
+        case .move:                return .openHand
+        }
     }
 
     func resized(_ r: CGRect, dx: CGFloat, dy: CGFloat) -> CGRect {

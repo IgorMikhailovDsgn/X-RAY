@@ -16,12 +16,28 @@ final class OverlayController {
     private(set) var snapshots: [Int: DisplaySnapshot] = [:]
     private var hoveredId: UUID?
 
+    /// Текущий подсвеченный bbox (наведение на канвасе или на плашке).
+    var currentHoveredId: UUID? { hoveredId }
+
     var isPresented: Bool { !windows.isEmpty }
 
-    /// Захват экранов и показ оверлея. Бросает `ScreenCaptureError` при отказе в доступе.
-    func present() async throws {
-        let snaps = try await ScreenCapturer.captureAll()
-        await MainActor.run { self.buildWindows(from: snaps) }
+    /// Показ оверлея: по прозрачному окну со скримом на каждый монитор. Захват
+    /// экрана НЕ делается (overlay = затемнение живого экрана), скриншот снимается
+    /// отдельно на Send. Поэтому здесь не нужно разрешение Screen Recording.
+    func present() {
+        guard windows.isEmpty else { return }
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        for (index, screen) in NSScreen.screens.enumerated() {
+            let displayID = (screen.deviceDescription[key] as? CGDirectDisplayID) ?? 0
+            let info = DisplaySnapshot(displayID: displayID, monitorIndex: index, image: nil,
+                                       frame: screen.frame, scaleFactor: screen.backingScaleFactor)
+            snapshots[index] = info
+            let window = OverlayWindow(snapshot: info)
+            wire(window.canvas)
+            windows[index] = window
+            window.orderFrontRegardless()
+        }
+        windows.values.first?.makeKey()
     }
 
     func dismiss() {
@@ -29,18 +45,6 @@ final class OverlayController {
         windows.removeAll()
         snapshots.removeAll()
         hoveredId = nil
-    }
-
-    @MainActor
-    private func buildWindows(from snaps: [DisplaySnapshot]) {
-        for snap in snaps {
-            snapshots[snap.monitorIndex] = snap
-            let window = OverlayWindow(snapshot: snap)
-            wire(window.canvas)
-            windows[snap.monitorIndex] = window
-            window.orderFrontRegardless()
-        }
-        windows.values.first?.makeKey()
     }
 
     private func wire(_ canvas: BboxCanvasView) {
