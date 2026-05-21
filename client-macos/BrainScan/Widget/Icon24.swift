@@ -10,6 +10,9 @@ enum Icon24: String, CaseIterable {
     case settings
     case check
     case send
+    case back
+    case add
+    case markNull
 
     /// Имя image set в asset catalog (для тех, у кого есть кастомный ассет).
     var assetName: String? {
@@ -18,7 +21,11 @@ enum Icon24: String, CaseIterable {
         case .annotate: return "icon-annotate"
         case .detect: return "icon-detect"
         case .settings: return "icon-settings"
-        case .check, .send: return nil
+        case .add: return "icon-add"
+        case .markNull: return "icon-mark-null"
+        case .send: return "icon-send"
+        case .back: return "icon-back"
+        case .check: return nil
         }
     }
 
@@ -31,6 +38,9 @@ enum Icon24: String, CaseIterable {
         case .settings: return "gearshape.fill"
         case .check: return "checkmark"
         case .send: return "paperplane.fill"
+        case .back: return "chevron.backward"
+        case .add: return "plus"
+        case .markNull: return "nosign"
         }
     }
 
@@ -42,6 +52,9 @@ enum Icon24: String, CaseIterable {
         case .settings: return "Settings"
         case .check: return "Confirm"
         case .send: return "Send"
+        case .back: return "Back"
+        case .add: return "Add"
+        case .markNull: return "Mark Null"
         }
     }
 

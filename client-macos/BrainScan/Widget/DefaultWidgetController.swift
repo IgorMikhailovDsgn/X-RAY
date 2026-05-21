@@ -42,11 +42,21 @@ final class DefaultWidgetController {
 
     // MARK: - Lifecycle
 
+    private var hasPositioned = false
+
     func show() {
-        if !panel.isVisible {
+        if !hasPositioned {
             positionAtDefaultLocation()
+            hasPositioned = true
         }
         panel.orderFrontRegardless()
+    }
+
+    /// Поставить виджет так, чтобы центр его тела (308×74) совпал с `bodyCenter`.
+    /// Используется при возврате из Annotate — морф «на месте» в обе стороны.
+    func place(bodyCenter: NSPoint) {
+        panel.setFrameOrigin(NSPoint(x: bodyCenter.x - 308 / 2, y: bodyCenter.y - 74 / 2))
+        hasPositioned = true
     }
 
     func hide() {
@@ -54,6 +64,14 @@ final class DefaultWidgetController {
     }
 
     var isVisible: Bool { panel.isVisible }
+
+    /// Центр «тела» виджета (308×74) в экранных координатах. Тело лежит в
+    /// нижнем-левом углу панели (y=0..74), сверху — скрытая indicator-карточка.
+    /// Annotate-тулбар стартует с этим же центром → морф «на месте».
+    var bodyCenterOnScreen: NSPoint {
+        let f = panel.frame
+        return NSPoint(x: f.minX + 308 / 2, y: f.minY + 74 / 2)
+    }
 
     func toggle() {
         isVisible ? hide() : show()

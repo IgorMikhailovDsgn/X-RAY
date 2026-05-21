@@ -11,10 +11,12 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "12.3"
-    # Dev-сборка: ad-hoc-подпись, без team, без hardened runtime.
+    # Dev-сборка: подпись стабильным самоподписанным сертификатом «BrainScan Dev»
+    # (Keychain Access → Certificate Assistant → Code Signing). Стабильная подпись →
+    # macOS не сбрасывает Screen Recording grant при каждой пересборке.
     # Перед релизом — отдельный план: notarization + Developer ID.
     CODE_SIGN_STYLE: Manual
-    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_IDENTITY: "BrainScan Dev"
     DEVELOPMENT_TEAM: ""
     ENABLE_HARDENED_RUNTIME: NO
     CLANG_ANALYZER_NONNULL: YES

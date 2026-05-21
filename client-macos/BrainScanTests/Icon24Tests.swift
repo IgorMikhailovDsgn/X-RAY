@@ -28,7 +28,10 @@ final class Icon24Tests: XCTestCase {
         XCTAssertEqual(Icon24.annotate.assetName, "icon-annotate")
         XCTAssertEqual(Icon24.detect.assetName, "icon-detect")
         XCTAssertEqual(Icon24.settings.assetName, "icon-settings")
+        XCTAssertEqual(Icon24.add.assetName, "icon-add")
+        XCTAssertEqual(Icon24.markNull.assetName, "icon-mark-null")
+        XCTAssertEqual(Icon24.send.assetName, "icon-send")
+        XCTAssertEqual(Icon24.back.assetName, "icon-back")
         XCTAssertNil(Icon24.check.assetName, "check пока без кастомного ассета")
-        XCTAssertNil(Icon24.send.assetName, "send пока без кастомного ассета")
     }
 }

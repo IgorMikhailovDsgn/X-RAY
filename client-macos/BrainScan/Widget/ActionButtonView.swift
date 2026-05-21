@@ -12,6 +12,9 @@ final class ActionButtonView: NSView {
 
     private let icon: Icon24
     private let label: String
+    /// Иконка всегда 100% (в default и active). Лейбл при этом по-прежнему 70%→100%.
+    /// disabled всё равно гасит иконку. Нужно для тулбара Annotate.
+    private let iconAlwaysOpaque: Bool
     private let iconView = NSImageView()
     private let labelView = NSTextField(labelWithString: "")
     private let backgroundLayer = CALayer()
@@ -31,10 +34,12 @@ final class ActionButtonView: NSView {
         label: String,
         enabled: Bool = true,
         tooltip: String? = nil,
-        iconSize: CGFloat = 28
+        iconSize: CGFloat = 28,
+        iconAlwaysOpaque: Bool = false
     ) {
         self.icon = icon
         self.label = label
+        self.iconAlwaysOpaque = iconAlwaysOpaque
         super.init(frame: NSRect(x: 0, y: 0, width: 72, height: 64))
         wantsLayer = true
         layer?.addSublayer(backgroundLayer)
@@ -137,7 +142,7 @@ final class ActionButtonView: NSView {
         case .default:
             backgroundLayer.backgroundColor = NSColor.clear.cgColor
             labelView.textColor = WidgetPalette.labelDefault
-            iconView.alphaValue = 0.70
+            iconView.alphaValue = iconAlwaysOpaque ? 1.0 : 0.70
         case .active:
             backgroundLayer.backgroundColor = WidgetPalette.itemActiveBackground.cgColor
             labelView.textColor = WidgetPalette.labelActive

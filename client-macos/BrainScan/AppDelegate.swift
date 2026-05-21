@@ -4,6 +4,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menubar: MenubarController?
     private var widget: DefaultWidgetController?
     private let settings = SettingsWindowController()
+    private let annotate = AnnotateController()
 
     func applicationDidFinishLaunching(_: Notification) {
         let widget = DefaultWidgetController()
@@ -19,10 +20,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menubar.onDetect = { [weak self] in self?.handleDetect() }
         menubar.onSettings = { [weak self] in self?.handleSettings() }
         self.menubar = menubar
+
+        annotate.onFinished = { [weak self] bodyCenter in
+            self?.widget?.place(bodyCenter: bodyCenter)
+            self?.widget?.show()
+        }
     }
 
     private func handleAnnotate() {
-        // Phase C step 5-10: открыть Annotate overlay поверх всех мониторов.
+        guard let widget else { return }
+        let center = widget.bodyCenterOnScreen
+        widget.hide()
+        annotate.start(bodyCenter: center)
     }
 
     private func handleDetect() {
