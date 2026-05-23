@@ -237,6 +237,7 @@ final class BboxCanvasView: NSView {
             color.withAlphaComponent(0.9).setStroke()
             let path = NSBezierPath(rect: draft)
             path.lineWidth = 2
+            path.setLineDash([8, 6], count: 2, phase: 0)
             path.stroke()
         }
     }
@@ -247,9 +248,11 @@ final class BboxCanvasView: NSView {
             : (box.kind == .region ? Self.regionColor : Self.tumorColor)
 
         // Внутренность — прозрачная «дырка» (вырезана в скриме), заливки нет.
+        // Обводка пунктирная — отличает режим разметки/Edit от Detect (там solid).
         baseColor.setStroke()
         let path = NSBezierPath(rect: box.rect)
         path.lineWidth = box.isActive ? 3 : 2
+        path.setLineDash([8, 6], count: 2, phase: 0)
         path.stroke()
 
         drawLabel(for: box, color: baseColor)
@@ -258,9 +261,13 @@ final class BboxCanvasView: NSView {
 
     private func drawLabel(for box: RenderBox, color: NSColor) {
         let title = "\(box.kind == .region ? "REGION" : "TUMOR") \(box.index)"
+        // Фон лейбла = цвет bbox; для региона (белый) нужен тёмный текст.
+        let textColor: NSColor = (box.kind == .region && !box.isInvalid)
+            ? NSColor(srgbRed: 0x02 / 255.0, green: 0x09 / 255.0, blue: 0x1A / 255.0, alpha: 1.0)
+            : .white
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11, weight: .bold),
-            .foregroundColor: NSColor.white,
+            .foregroundColor: textColor,
         ]
         let text = NSAttributedString(string: title, attributes: attrs)
         let textSize = text.size()
@@ -284,8 +291,8 @@ final class BboxCanvasView: NSView {
         }
     }
 
-    // Цвета.
-    private static let regionColor = NSColor.systemTeal
+    // Цвета. Едины для разметки и для предсказаний detect: region — белый, tumor — оранжевый.
+    private static let regionColor = NSColor.white
     private static let tumorColor = NSColor.systemOrange
     private static let invalidColor = NSColor.systemRed
     /// Затемнение живого экрана вне bbox: #02091A 50%.

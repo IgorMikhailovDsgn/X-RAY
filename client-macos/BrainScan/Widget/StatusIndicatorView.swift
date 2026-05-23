@@ -19,11 +19,16 @@ final class StatusIndicatorView: NSView {
 
     private var dotLayer: CALayer { dotView.layer! }
 
+    /// Карточка индикатора не шире виджет-body (308pt). Длинные вторичные
+    /// строки переносятся по словам, а не обрезаются за пределами панели.
+    private let maxWidth: CGFloat = 308
+
     init() {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = WidgetPalette.outerBackground.cgColor
         layer?.cornerRadius = WidgetPalette.outerCornerRadius
+        widthAnchor.constraint(lessThanOrEqualToConstant: maxWidth).isActive = true
 
         dotView.wantsLayer = true
         dotLayer.cornerRadius = 3
@@ -35,8 +40,9 @@ final class StatusIndicatorView: NSView {
 
         primaryLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         primaryLabel.textColor = WidgetPalette.labelActive
-        primaryLabel.lineBreakMode = .byClipping
-        primaryLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        primaryLabel.lineBreakMode = .byTruncatingTail
+        // Сжимаемся, чтобы вписаться в `maxWidth`; «hug по тексту» сохраняем.
+        primaryLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         primaryLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         warningIcon.image = NSImage(
@@ -112,8 +118,12 @@ final class StatusIndicatorView: NSView {
             label.textColor = WidgetPalette.labelDefault
             label.lineBreakMode = .byWordWrapping
             label.maximumNumberOfLines = 0
+            // Сжимаемся в ширину контейнера — текст переносится, а не вылезает.
             label.setContentHuggingPriority(.required, for: .horizontal)
-            label.setContentCompressionResistancePriority(.required, for: .horizontal)
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            // Перенос работает только когда NSTextField знает предельную ширину
+            // строки заранее (учитываем horizontal padding контейнера 12+12).
+            label.preferredMaxLayoutWidth = maxWidth - 24
             secondaryStack.addArrangedSubview(label)
         }
         needsLayout = true

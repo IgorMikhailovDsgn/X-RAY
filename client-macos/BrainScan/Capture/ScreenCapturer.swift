@@ -38,6 +38,25 @@ enum ScreenCapturer {
         CGRequestScreenCaptureAccess()
     }
 
+    /// Захват с переиндексацией по `monitorIndex` из геометрии оверлея — чтобы
+    /// связь bbox.monitorIndex ↔ изображение оставалась стабильной, даже если
+    /// `SCShareableContent.displays` упорядочен иначе, чем `NSScreen.screens`.
+    static func captureForSubmit(
+        geometry: [Int: DisplaySnapshot]
+    ) async throws -> [Int: DisplaySnapshot] {
+        let fresh = try await captureAll()
+        let byID = Dictionary(uniqueKeysWithValues: fresh.map { ($0.displayID, $0) })
+        var out: [Int: DisplaySnapshot] = [:]
+        for (index, geo) in geometry {
+            guard let f = byID[geo.displayID] else { continue }
+            out[index] = DisplaySnapshot(
+                displayID: geo.displayID, monitorIndex: index, image: f.image,
+                frame: geo.frame, scaleFactor: geo.scaleFactor
+            )
+        }
+        return out
+    }
+
     static func captureAll() async throws -> [DisplaySnapshot] {
         // Не полагаемся на CGPreflight (бывает несинхронным). Источник правды —
         // сама попытка через ScreenCaptureKit: при «not determined» она показывает

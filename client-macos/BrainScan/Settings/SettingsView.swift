@@ -6,10 +6,11 @@ struct SettingsView: View {
     let statusText: String
     let statusColor: Color
     let statusMeta: String
+    let onSignOut: () -> Void
 
     @State private var allowScreenshot = true
     @State private var notifications = true
-    @State private var keyboardShortcuts = true
+    @ObservedObject private var store = SettingsStore.shared
 
     private let shortcuts: [(name: String, keys: String)] = [
         ("Show widget", "⇧⌘⏎"),
@@ -45,7 +46,7 @@ struct SettingsView: View {
                         toggleRow(
                             "Keyboard shortcuts",
                             "When enabled, you can use keyboard shortcuts.",
-                            $keyboardShortcuts
+                            $store.keyboardShortcutsEnabled
                         )
                     }
                     .padding(8)
@@ -71,9 +72,9 @@ struct SettingsView: View {
 
                 GroupBox("Account") {
                     HStack {
-                        Text("Igor Mikhailov").fontWeight(.medium)
+                        Text("Signed in").fontWeight(.medium)
                         Spacer()
-                        Button("Change…") {}
+                        Button("Sign Out", action: onSignOut)
                     }
                     .padding(8)
                 }

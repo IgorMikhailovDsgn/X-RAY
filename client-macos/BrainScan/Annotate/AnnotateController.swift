@@ -20,6 +20,8 @@ final class AnnotateController {
     private var keyMonitor: Any?
     private var invalid: [UUID: ValidationError] = [:]
     private var draftRect: CGRect = .zero
+    private var isSending = false
+    private var sendTask: Task<Void, Never>?
     private let dotOverflow: CGFloat = 8   // == AnnotateToolbarView.dotOverflow (тело меньше панели)
     private let dropdownGap: CGFloat = 8   // зазор между тулбаром и нижней плашкой списка
 
@@ -71,10 +73,24 @@ final class AnnotateController {
 
     // MARK: - Lifecycle
 
+    /// Цвет status-точки тулбара — синхронизирован с виджетом (см. AppDelegate).
+    func setStatusDotColor(_ color: NSColor) { toolbar.setDotColor(color) }
+
     /// `bodyCenter` — центр тела Default-виджета в экранных координатах: тулбар
-    /// появляется на том же месте (морф «на месте»).
-    func start(bodyCenter: NSPoint) {
-        model = AnnotationModel(entryMode: .annotate)
+    /// появляется на том же месте (морф «на месте»). `prefill` ≠ nil → вход через
+    /// Edit (после автодетекции): Region/Tumor предзаполнены, entryMode = .edit.
+    func start(bodyCenter: NSPoint,
+               prefill: (region: EntityState, tumor: EntityState)? = nil) {
+        if let prefill {
+            model = AnnotationModel(entryMode: .edit,
+                                    regionState: prefill.region, tumorState: prefill.tumor)
+            // Активируем предсказанные bbox каждой сущности, чтобы плашка координат
+            // показалась сразу (без активного id apply() пошёл бы в Mark Null-сегмент).
+            if let id = prefill.region.bboxes.first?.id { model.select(id: id) }
+            if let id = prefill.tumor.bboxes.first?.id { model.select(id: id) }
+        } else {
+            model = AnnotationModel(entryMode: .annotate)
+        }
         model.onChange = { [weak self] in self?.refresh() }
         invalid = [:]
         refresh()
@@ -92,6 +108,9 @@ final class AnnotateController {
         let f = panel.frame
         let bodyCenter = NSPoint(x: f.minX + (f.width - dotOverflow) / 2,
                                  y: f.minY + (f.height - dotOverflow) / 2)
+        sendTask?.cancel()
+        sendTask = nil
+        isSending = false
         removeKeyMonitor()
         closeDropdown()
         overlay.dismiss()
@@ -231,10 +250,35 @@ final class AnnotateController {
     // MARK: - Send
 
     private func send() {
-        guard model.sendEnabled else { return }
-        let payload = AnnotationSubmitter.makePayload(model: model, snapshots: overlay.snapshots)
-        AnnotationSubmitter.submit(payload)
-        finish()
+        guard model.sendEnabled, !isSending else { return }
+        isSending = true
+        toolbar.setSendEnabled(false)
+        let geometry = overlay.snapshots
+        let payload = UploadPayload.from(model: model)
+        sendTask = Task { [weak self] in
+            do {
+                let prepared = try await AnnotationSubmitter.prepare(geometry: geometry)
+                try await SyncManager.shared.submitOrQueue(payload: payload, snapshots: prepared)
+                await MainActor.run { self?.finish() }
+            } catch is CancellationError {
+                // финиш уже произошёл — UI закрыт, тихо выходим.
+            } catch {
+                await MainActor.run { self?.handleSendFailure(error) }
+            }
+        }
+    }
+
+    @MainActor
+    private func handleSendFailure(_ error: Error) {
+        isSending = false
+        toolbar.setSendEnabled(model.sendEnabled)
+        let alert = NSAlert()
+        alert.messageText = "Could not send annotation"
+        alert.informativeText = (error as? LocalizedError)?.errorDescription
+            ?? error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     // MARK: - Hotkeys (R/T/N/Esc/⌘S), активны пока оверлей открыт
@@ -253,6 +297,11 @@ final class AnnotateController {
     /// Возвращает true, если событие поглощено.
     private func handleKey(_ event: NSEvent) -> Bool {
         if event.keyCode == 53 { finish(); return true }   // Esc
+        // ⌥⌘⏎ — Send (синоним ⌘S), как в списке шорткатов Settings.
+        if event.keyCode == 36
+            && event.modifierFlags.intersection([.option, .command]) == [.option, .command] {
+            send(); return true
+        }
         let cmd = event.modifierFlags.contains(.command)
         switch event.charactersIgnoringModifiers?.lowercased() {
         case "s" where cmd: send(); return true

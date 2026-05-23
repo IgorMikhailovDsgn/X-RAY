@@ -7,6 +7,9 @@ final class SettingsWindowController: NSWindowController {
     var status: WidgetStatus = .noServer(localAnnotations: 0) {
         didSet { hosting?.rootView = makeView() }
     }
+    /// Sign Out — клик по «Change…» в секции Account. Чистит токены и возвращает
+    /// на экран входа (логика — в AppDelegate).
+    var onSignOut: (() -> Void)?
 
     private var hosting: NSHostingController<SettingsView>?
 
@@ -41,7 +44,8 @@ final class SettingsWindowController: NSWindowController {
         SettingsView(
             statusText: status.primaryText,
             statusColor: Color(status.dotColor),
-            statusMeta: metaLine
+            statusMeta: metaLine,
+            onSignOut: { [weak self] in self?.onSignOut?() }
         )
     }
 

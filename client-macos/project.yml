@@ -39,6 +39,10 @@ targets:
         CFBundleVersion: "1"
         NSHumanReadableCopyright: "© 2026 BrainScan"
         NSPrincipalClass: NSApplication
+        # Dev-сборка ходит на http://localhost:8000 — разрешаем local networking
+        # без HTTPS. Production-домены пойдут через стандартный ATS поверх TLS.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.brainscan.client

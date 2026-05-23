@@ -122,6 +122,17 @@ final class AnnotateToolbarView: NSView {
         (forTumor ? tumorNav : regionNav).setOpen(open)
     }
 
+    /// Внешний override состояния Send-кнопки (используется на время отправки,
+    /// чтобы заблокировать повторные клики).
+    func setSendEnabled(_ enabled: Bool) {
+        sendButton.setEnabled(enabled)
+    }
+
+    /// Цвет status-точки — отражает реальный статус сервера/очереди (см. AppDelegate).
+    func setDotColor(_ color: NSColor) {
+        statusDot.fillColor = color
+    }
+
     private func constrainFixedSizes() {
         heightOnly(backButton)   // Back — hug по содержимому (иконка + «Back»)
         for b in [addRegionButton, markNullRegionButton, addTumorButton, markNullTumorButton] {

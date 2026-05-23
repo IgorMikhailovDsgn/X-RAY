@@ -1,60 +1,115 @@
+import AppKit
 import Foundation
 
-/// Заглушка отправки разметки. APIClient (Phase C step 3) ещё не реализован,
-/// поэтому здесь собирается валидный payload в physical/crop-координатах и
-/// логируется. Реальный upload в S3/API подключим, когда появится APIClient.
+/// Снимок монитора, подготовленный к загрузке: PNG (для multipart) и CGImage
+/// (для генерации crop'а). Создаётся из свежего захвата (UI Send) или из PNG
+/// на диске (replay из sync-очереди).
+struct PreparedSnapshot {
+    let displayID: CGDirectDisplayID
+    let monitorIndex: Int
+    let frame: CGRect
+    let scaleFactor: CGFloat
+    let image: CGImage
+    let png: Data
+}
+
+typealias PreparedSnapshots = [Int: PreparedSnapshot]
+
+/// Два независимых шага отправки разметки:
+/// - `prepare(geometry:)` — захват свежих скриншотов всех мониторов (на UI Send).
+/// - `upload(payload:snapshots:)` — отправка screenshots → annotations → localize-images
+///   → tumor-annotations. Используется и UI Send, и replay из sync-очереди.
+///
+/// Null-сущности при cold-start (action='created' + bbox=NULL) пока пропускаются —
+/// DB CHECK не пускает, см. комментарии в коде. Уточним отдельным экшеном позже.
 enum AnnotationSubmitter {
-    struct RegionPayload { let bboxPhysical: CGRect?; let monitorIndex: Int; let isNull: Bool }
-    struct TumorPayload { let bboxInCrop: CGRect?; let isNull: Bool }
-    struct Payload { let regions: [RegionPayload]; let tumors: [TumorPayload] }
-
-    /// Собрать payload из состояния модели и снапшотов мониторов (для dpi).
-    static func makePayload(model: AnnotationModel,
-                            snapshots: [Int: DisplaySnapshot]) -> Payload {
-        func dpi(_ monitorIndex: Int) -> CGFloat {
-            snapshots[monitorIndex]?.scaleFactor ?? 2.0
+    static func prepare(geometry: [Int: DisplaySnapshot]) async throws -> PreparedSnapshots {
+        let fresh = try await ScreenCapturer.captureForSubmit(geometry: geometry)
+        var out: PreparedSnapshots = [:]
+        for (index, snap) in fresh {
+            guard let image = snap.image, let png = image.pngData() else { continue }
+            out[index] = PreparedSnapshot(
+                displayID: snap.displayID, monitorIndex: index,
+                frame: snap.frame, scaleFactor: snap.scaleFactor,
+                image: image, png: png
+            )
         }
-
-        let regions: [RegionPayload]
-        switch model.regionState {
-        case .null:
-            regions = [RegionPayload(bboxPhysical: nil, monitorIndex: 0, isNull: true)]
-        case let .bboxes(list):
-            regions = list.map {
-                RegionPayload(
-                    bboxPhysical: CoordinateConverter.physical($0.rect, dpi: dpi($0.monitorIndex)),
-                    monitorIndex: $0.monitorIndex, isNull: false
-                )
-            }
-        case .empty:
-            regions = []
+        guard !out.isEmpty else {
+            throw NSError(domain: "BrainScan.Submit", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "No screen images captured."
+            ])
         }
-
-        // Tumor конвертируется в crop первого региона (мульти-регион — TODO при APIClient).
-        let regionRect = model.regionState.bboxes.first?.rect
-        let regionMonitor = model.regionState.bboxes.first?.monitorIndex ?? 0
-        let tumors: [TumorPayload]
-        switch model.tumorState {
-        case .null:
-            tumors = [TumorPayload(bboxInCrop: nil, isNull: true)]
-        case let .bboxes(list):
-            tumors = list.map { t in
-                let crop = regionRect.map {
-                    CoordinateConverter.tumorInCrop(tumorLogical: t.rect, regionLogical: $0,
-                                                    dpi: dpi(regionMonitor))
-                }
-                return TumorPayload(bboxInCrop: crop, isNull: false)
-            }
-        case .empty:
-            tumors = []
-        }
-
-        return Payload(regions: regions, tumors: tumors)
+        return out
     }
 
-    static func submit(_ payload: Payload) {
-        NSLog("[BrainScan] Annotation submit (stub): regions=\(payload.regions.count) "
-              + "tumors=\(payload.tumors.count)")
-        // TODO(APIClient): загрузить скриншот+crop в S3, создать localize/tumor annotations.
+    static func upload(payload: UploadPayload, snapshots: PreparedSnapshots) async throws {
+        let api = APIClient.shared
+
+        // 1. Скриншоты всех мониторов одной сессией.
+        let pngs = snapshots.mapValues(\.png)
+        let screen = try await api.uploadScreenshots(images: pngs)
+
+        // 2. Region: annotation → crop → localize-image.
+        var firstLocalizeImageId: UUID?
+        for region in payload.regions {
+            guard let snap = snapshots[region.monitorIndex] else { continue }
+            let physical = CoordinateConverter.physical(region.rect.cgRect, dpi: snap.scaleFactor)
+            let bboxDTO = BboxDTO(physical: physical)
+            let annotation = try await api.createLocalizeAnnotation(
+                .init(screenId: screen.id, detectionId: nil,
+                      monitorIndex: region.monitorIndex, bbox: bboxDTO, action: "created")
+            )
+            guard let cropPNG = makeCropPNG(image: snap.image, frame: snap.frame,
+                                            regionLogical: region.rect.cgRect)
+            else { continue }
+            let img = try await api.uploadLocalizeImage(
+                screenId: screen.id, monitorIndex: region.monitorIndex, bbox: bboxDTO,
+                detectionId: nil, annotationId: annotation.id, crop: cropPNG
+            )
+            if firstLocalizeImageId == nil { firstLocalizeImageId = img.id }
+        }
+
+        // 3. Tumor → tumor-annotations (привязка к localize-image первого региона).
+        if let lid = firstLocalizeImageId, let firstRegion = payload.regions.first,
+           let snap = snapshots[firstRegion.monitorIndex] {
+            for tumor in payload.tumors {
+                let inCrop = CoordinateConverter.tumorInCrop(
+                    tumorLogical: tumor.rect.cgRect,
+                    regionLogical: firstRegion.rect.cgRect,
+                    dpi: snap.scaleFactor
+                )
+                _ = try await api.createTumorAnnotation(
+                    .init(localizeImageId: lid, detectionId: nil,
+                          bbox: BboxDTO(physical: inCrop), action: "created")
+                )
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    /// Crop из CGImage по region.rect (logical). Используются фактические размеры
+    /// захваченного изображения — не зависим от `SCStreamConfiguration` параметров.
+    private static func makeCropPNG(image: CGImage, frame: CGRect,
+                                    regionLogical: CGRect) -> Data? {
+        let scaleX = CGFloat(image.width) / frame.size.width
+        let scaleY = CGFloat(image.height) / frame.size.height
+        let cropRect = CGRect(
+            x: (regionLogical.origin.x * scaleX).rounded(),
+            y: (regionLogical.origin.y * scaleY).rounded(),
+            width: (regionLogical.size.width * scaleX).rounded(),
+            height: (regionLogical.size.height * scaleY).rounded()
+        ).integral
+        guard let cropped = image.cropping(to: cropRect) else { return nil }
+        return cropped.pngData()
+    }
+}
+
+extension CGImage {
+    /// PNG-байты CGImage через `NSBitmapImageRep`. Возвращает nil если не удалось
+    /// закодировать (редко на корректных RGBA-изображениях).
+    func pngData() -> Data? {
+        let rep = NSBitmapImageRep(cgImage: self)
+        return rep.representation(using: .png, properties: [:])
     }
 }
