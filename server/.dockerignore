@@ -1,0 +1,27 @@
+# Локальные артефакты и секреты — в образ не попадают.
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Локальные конфиги — production-конфиг прокидывается через env-vars.
+.env
+.env.*
+!.env.example
+
+# Git и редакторские мусора.
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+
+# Тесты — для рантайма не нужны.
+tests/
+# README.md держим в контексте: на него ссылается pyproject.toml (readme="README.md"),
+# без него hatchling валится при сборке.

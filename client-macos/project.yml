@@ -7,6 +7,13 @@ options:
     macOS: "12.3"   # минимум для ScreenCaptureKit (Phase C step 5)
   groupSortPosition: top
 
+# Три конфигурации: Debug → local backend, Staging/Release → облачные среды
+# (URL'ы пока placeholder'ы, подменим, когда поднимем dev/stage/prod в TimeWebCloud).
+configs:
+  Debug: debug
+  Staging: release
+  Release: release
+
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -43,12 +50,24 @@ targets:
         # без HTTPS. Production-домены пойдут через стандартный ATS поверх TLS.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # Подставляется при сборке из build-settings (`BRAINSCAN_API_BASE_URL`),
+        # на рантайме читается в `APIConfig.baseURL` через `Bundle.main`.
+        BrainScanAPIBaseURL: $(BRAINSCAN_API_BASE_URL)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.brainscan.client
         PRODUCT_NAME: BrainScan
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: BrainScan/Info.plist
+      configs:
+        Debug:
+          BRAINSCAN_API_BASE_URL: http://localhost:8000/api/v1
+        Staging:
+          # TODO: подставить реальный stage-URL после поднятия TimeWebCloud dev/stage.
+          BRAINSCAN_API_BASE_URL: https://stage-api.brainscan.example.com/api/v1
+        Release:
+          # TODO: подставить реальный prod-URL.
+          BRAINSCAN_API_BASE_URL: https://api.brainscan.example.com/api/v1
 
   BrainScanTests:
     type: bundle.unit-test

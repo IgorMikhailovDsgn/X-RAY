@@ -3,7 +3,13 @@ import os
 from celery import Celery
 from celery.schedules import crontab
 
+APP_ENV = os.environ.get("APP_ENV", "local")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+# В non-local средах не доверяем дефолтному адресу redis — он почти наверняка
+# не достучится до прод-брокера, и Celery будет молча ретраить впустую.
+if APP_ENV != "local" and REDIS_URL == "redis://localhost:6379/0":
+    raise RuntimeError(f"REDIS_URL must be set explicitly when APP_ENV={APP_ENV!r}")
 
 app = Celery(
     "brainscan",

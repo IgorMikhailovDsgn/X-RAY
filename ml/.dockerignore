@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.env
+.env.*
+!.env.example
+
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+
+tests/
+# README.md держим в контексте: на него ссылается pyproject.toml (readme="README.md").

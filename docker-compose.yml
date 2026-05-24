@@ -83,4 +83,52 @@ services:
       postgres: { condition: service_healthy }
       minio-init: { condition: service_completed_successfully }
 
+  migrate:
+    # One-shot: накатывает alembic-миграции и завершает работу.
+    # Server и worker зависят от service_completed_successfully — гарантия,
+    # что схема актуальна на старте.
+    build:
+      context: ./server
+    container_name: brainscan_migrate
+    env_file: server/.env
+    environment:
+      # Внутри compose-сети — фиксированные хосты, чтобы не зависеть от .env
+      # (там DATABASE_URL смотрит на localhost для запуска uvicorn без compose).
+      ALEMBIC_DATABASE_URL: postgresql+psycopg2://brainscan:brainscan_dev@postgres/brainscan
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  server:
+    build:
+      context: ./server
+    container_name: brainscan_server
+    env_file: server/.env
+    environment:
+      # Compose-сеть: хосты = имена сервисов.
+      DATABASE_URL: postgresql+asyncpg://brainscan:brainscan_dev@postgres/brainscan
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://minio:9000
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    build:
+      context: ./ml
+    container_name: brainscan_worker
+    env_file: ml/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://brainscan:brainscan_dev@postgres/brainscan
+      S3_ENDPOINT_URL: http://minio:9000
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
 # Volumes are mounted via bind to ./.docker-data — gitignored, easy to nuke locally
