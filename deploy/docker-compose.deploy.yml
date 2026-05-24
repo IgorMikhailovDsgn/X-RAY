@@ -1,0 +1,91 @@
+# BrainScan — production-ориентированный compose для деплоя на TimeWebCloud VPS.
+# Поднимает: nginx-proxy + acme-companion (TLS) + server + worker + redis + migrate.
+# НЕ поднимает: postgres, s3, mlflow — это managed-сервисы в TimeWebCloud.
+#
+# Запуск:
+#   docker compose -f docker-compose.deploy.yml --env-file .env up -d
+#
+# Образы собираются на VPS из исходников (build: ./server, ./ml). После
+# подключения CI/CD (Phase 3) заменим на image: ghcr.io/.../brainscan-server:latest.
+
+services:
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy:1.6
+    container_name: brainscan_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - certs:/etc/nginx/certs
+      - vhost:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+    restart: unless-stopped
+
+  acme-companion:
+    image: nginxproxy/acme-companion:2.4
+    container_name: brainscan_acme
+    depends_on: [nginx-proxy]
+    environment:
+      DEFAULT_EMAIL: ${LETSENCRYPT_EMAIL}
+      NGINX_PROXY_CONTAINER: brainscan_nginx
+    volumes:
+      - certs:/etc/nginx/certs
+      - vhost:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - acme:/etc/acme.sh
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ../server
+    container_name: brainscan_migrate
+    env_file: .env
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  server:
+    build:
+      context: ../server
+    container_name: brainscan_server
+    env_file: .env
+    environment:
+      # nginx-proxy цепляет контейнер по этим переменным и автоматически
+      # маршрутизирует ${API_DOMAIN} → этот сервер, плюс acme выпускает TLS.
+      VIRTUAL_HOST: ${API_DOMAIN}
+      VIRTUAL_PORT: "8000"
+      LETSENCRYPT_HOST: ${API_DOMAIN}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../ml
+    container_name: brainscan_worker
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: brainscan_redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  certs:
+  vhost:
+  html:
+  acme:
