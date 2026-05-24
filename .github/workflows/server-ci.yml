@@ -1,0 +1,106 @@
+name: server-ci
+
+# Линт + типы + тесты для server/ (и ruff для ml/). Гейтит PR в main и
+# проверяет каждый push в main — нужен для последующего build-and-deploy.yml.
+
+on:
+  pull_request:
+    paths:
+      - "server/**"
+      - "ml/**"
+      - "docs/brainscan_schema.sql"
+      - ".github/workflows/server-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "ml/**"
+      - "docs/brainscan_schema.sql"
+      - ".github/workflows/server-ci.yml"
+
+concurrency:
+  group: server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-type:
+    name: ruff + mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.13"
+          enable-cache: true
+
+      - name: Install server deps
+        working-directory: server
+        run: uv sync --frozen
+
+      - name: ruff (server)
+        working-directory: server
+        run: uv run ruff check .
+
+      - name: mypy (server)
+        working-directory: server
+        run: uv run mypy app/
+
+      - name: Install ml deps
+        working-directory: ml
+        run: uv sync --frozen
+
+      - name: ruff (ml)
+        working-directory: ml
+        run: uv run ruff check .
+
+  pytest:
+    name: pytest (server)
+    runs-on: ubuntu-latest
+
+    # conftest.py ждёт реальный Postgres на localhost:5432, S3 мокается in-memory
+    # (FakeS3Client), поэтому MinIO здесь не нужен.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: brainscan
+          POSTGRES_PASSWORD: brainscan_dev
+          POSTGRES_DB: brainscan_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brainscan -d brainscan_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://brainscan:brainscan_dev@localhost:5432/brainscan_test
+      ALEMBIC_DATABASE_URL: postgresql+psycopg2://brainscan:brainscan_dev@localhost:5432/brainscan_test
+      JWT_SECRET: ci-not-used-in-prod
+      S3_ENDPOINT_URL: http://localhost:9000
+      S3_ACCESS_KEY: test
+      S3_SECRET_KEY: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.13"
+          enable-cache: true
+
+      - name: Install deps
+        working-directory: server
+        run: uv sync --frozen
+
+      - name: Apply migrations
+        working-directory: server
+        run: uv run alembic upgrade head
+
+      - name: Run pytest
+        working-directory: server
+        run: uv run pytest -q

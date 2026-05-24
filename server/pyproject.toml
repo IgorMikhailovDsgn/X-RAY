@@ -37,10 +37,21 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "RUF"]
+# RUF001/002/003: ambiguous Cyrillic vs Latin — комментарии и докстринги в репо
+# намеренно на русском, ловить cyr/lat-смесь не нужно.
+# B008: FastAPI идиома `Depends()` в дефолтных значениях параметров.
+ignore = ["RUF001", "RUF002", "RUF003", "B008"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = false
+disable_error_code = ["import-untyped"]
+exclude = ["alembic/", "tests/"]
 
 [build-system]
 requires = ["hatchling"]

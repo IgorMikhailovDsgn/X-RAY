@@ -2,11 +2,15 @@
 # Поднимает: nginx-proxy + acme-companion (TLS) + server + worker + redis + migrate.
 # НЕ поднимает: postgres, s3, mlflow — это managed-сервисы в TimeWebCloud.
 #
-# Запуск:
+# Запуск (типовой CI-деплой):
+#   docker compose -f docker-compose.deploy.yml --env-file .env pull server worker
 #   docker compose -f docker-compose.deploy.yml --env-file .env up -d
 #
-# Образы собираются на VPS из исходников (build: ./server, ./ml). После
-# подключения CI/CD (Phase 3) заменим на image: ghcr.io/.../brainscan-server:latest.
+# Образы тянутся из GHCR (см. .github/workflows/build-deploy.yml). Тег берётся
+# из IMAGE_TAG (короткий SHA коммита), дефолт `latest` — на случай ручного
+# bootstrap-деплоя до того, как CI собрал первый SHA. Build-блоки оставлены,
+# чтобы при необходимости можно было собрать образ локально на VPS:
+#   docker compose -f docker-compose.deploy.yml --env-file .env build server worker
 
 services:
   nginx-proxy:
@@ -40,6 +44,7 @@ services:
     restart: unless-stopped
 
   migrate:
+    image: ghcr.io/igormikhailovdsgn/brainscan-server:${IMAGE_TAG:-latest}
     build:
       context: ..
       dockerfile: server/Dockerfile
@@ -49,6 +54,7 @@ services:
     restart: "no"
 
   server:
+    image: ghcr.io/igormikhailovdsgn/brainscan-server:${IMAGE_TAG:-latest}
     build:
       context: ..
       dockerfile: server/Dockerfile
@@ -67,6 +73,7 @@ services:
     restart: unless-stopped
 
   worker:
+    image: ghcr.io/igormikhailovdsgn/brainscan-worker:${IMAGE_TAG:-latest}
     build:
       context: ..
       dockerfile: ml/Dockerfile

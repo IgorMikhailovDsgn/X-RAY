@@ -1,0 +1,123 @@
+name: build-deploy
+
+# На каждый push в main: собираем server + worker образы, публикуем в GHCR
+# с двумя тегами (`latest` и `sha-<short>`), затем SSH'имся на dev VPS и
+# делаем `docker compose pull && up -d`. SHA-тег используем как IMAGE_TAG
+# на VPS — это даёт детерминистичный rollback на конкретный коммит.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "ml/**"
+      - "docs/brainscan_schema.sql"
+      - "deploy/**"
+      - ".github/workflows/build-deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false  # деплои не отменяем — может оставить полу-применённую миграцию
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  build-push:
+    name: Build & push images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.tag.outputs.sha_short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute short SHA
+        id: tag
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Lowercase owner
+        id: owner
+        run: echo "owner=$(echo '${{ env.IMAGE_OWNER }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push server
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.owner }}/brainscan-server:latest
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.owner }}/brainscan-server:${{ steps.tag.outputs.sha_short }}
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,scope=server,mode=max
+
+      - name: Build & push worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ml/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.owner }}/brainscan-worker:latest
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.owner }}/brainscan-worker:${{ steps.tag.outputs.sha_short }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,scope=worker,mode=max
+
+  deploy-dev:
+    name: Deploy to dev VPS
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: https://dev-api.cfi-messenger.ru/api/v1/health
+    steps:
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE_TAG: ${{ needs.build-push.outputs.image_tag }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          envs: IMAGE_TAG
+          script_stop: true
+          # Скрипт идемпотентен: pull нового образа → накатить миграции
+          # (one-shot контейнер) → перезапустить server+worker. Redis не трогаем
+          # (rolling-deploy не нужен — single-node dev). После успеха курлим /health.
+          script: |
+            set -euo pipefail
+            cd ~/brainscan/deploy
+            # Тянем актуальный compose с публичного main — на VPS не нужен git,
+            # rsync с локала тоже больше не требуется. .env остаётся как есть
+            # (создан вручную, содержит секреты, не в репо).
+            curl -fsS -o docker-compose.deploy.yml \
+              https://raw.githubusercontent.com/${{ github.repository }}/main/deploy/docker-compose.deploy.yml
+            # Записываем/обновляем IMAGE_TAG в .env, чтобы compose подхватывал
+            # его и после ручных up -d (без проброса env-переменной).
+            if grep -q '^IMAGE_TAG=' .env; then
+              sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${IMAGE_TAG}|" .env
+            else
+              echo "IMAGE_TAG=${IMAGE_TAG}" >> .env
+            fi
+            export IMAGE_TAG
+            docker compose -f docker-compose.deploy.yml --env-file .env pull server worker
+            docker compose -f docker-compose.deploy.yml --env-file .env up -d --no-deps migrate
+            docker compose -f docker-compose.deploy.yml --env-file .env up -d --no-deps server worker
+            sleep 5
+            curl -fsS https://dev-api.cfi-messenger.ru/api/v1/health

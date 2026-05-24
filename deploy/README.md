@@ -107,10 +107,52 @@ Staging:
 ```
 Пересобрать клиент в Staging-конфигурации, проверить sign-in + Annotate Send.
 
+## CI/CD (Phase 3 — подключён)
+
+Push в `main` → GH Actions:
+
+1. `server-ci.yml` — ruff + mypy + pytest (Postgres service) на каждый PR/push.
+2. `build-deploy.yml` — собирает `brainscan-server` и `brainscan-worker` в GHCR
+   (`ghcr.io/igormikhailovdsgn/brainscan-{server,worker}:<sha>` + `:latest`),
+   затем SSH'ится на VPS, тянет свежий `docker-compose.deploy.yml` с
+   raw.githubusercontent.com, прописывает `IMAGE_TAG=<sha>` в `deploy/.env`,
+   и делает `docker compose pull && up -d migrate && up -d server worker`.
+   Финальный smoke — `curl https://dev-api.cfi-messenger.ru/api/v1/health`.
+
+### Что нужно настроить в GitHub один раз
+
+1. **GHCR-пакеты сделать публичными** (т.к. репа публичная):
+   - GitHub → Profile → Packages → `brainscan-server` → Package settings →
+     Change visibility → Public. Повторить для `brainscan-worker`. После
+     этого `docker compose pull` на VPS не требует `docker login`.
+
+2. **GitHub Secrets** (repo Settings → Secrets and variables → Actions):
+   - `VPS_HOST` = `5.42.122.92`
+   - `VPS_USER` = `brainscan`
+   - `VPS_SSH_KEY` = содержимое приватного ключа из
+     `~/.ssh/id_brainscan_gh_actions` (включая `-----BEGIN ... -----` строки).
+     Публичная половина уже добавлена в `~brainscan/.ssh/authorized_keys` на VPS.
+   - (опц.) `VPS_PORT` если SSH не на 22.
+
+3. **GitHub Environment** `dev` (Settings → Environments → New environment):
+   создать просто чтобы видеть deploy-history; protection rules не обязательны.
+
+### Rollback
+
+```bash
+ssh brainscan-deploy
+cd ~/brainscan/deploy
+sed -i 's|^IMAGE_TAG=.*|IMAGE_TAG=<good-sha>|' .env
+docker compose -f docker-compose.deploy.yml --env-file .env pull server worker
+docker compose -f docker-compose.deploy.yml --env-file .env up -d --no-deps server worker
+```
+
+(SHA брать из истории GHCR-пакета — там видны все собранные теги.)
+
 ## Что дальше
 
-После того как dev-окружение поднято и работает end-to-end → Phase 3 (CI/CD):
-автоматическая сборка образов в GHCR, авто-pull + restart на VPS по push в main.
+Phase 4 — отдельные stage/prod VPS с promotion-flow через workflow_dispatch.
+Phase 5 — observability (structured logs, метрики).
 
 ## Troubleshooting
 
@@ -124,13 +166,15 @@ Staging:
   endpoint Postgres недоступен из этой подсети. Проверить, что VPS в той же
   приватной сети, что и DB.
 
-## Обновление кода (до подключения CI/CD)
+## Обновление кода вручную (fallback, обычно не нужно — есть CI/CD)
 
 ```bash
-cd ~/brainscan
-git pull
-cd deploy
-docker compose -f docker-compose.deploy.yml build server worker migrate
-docker compose -f docker-compose.deploy.yml --env-file .env up -d
-# migrate сам прокатает новые миграции перед стартом server'а
+cd ~/brainscan/deploy
+# Если поменялся compose:
+curl -fsS -o docker-compose.deploy.yml \
+  https://raw.githubusercontent.com/IgorMikhailovDsgn/X-RAY/main/deploy/docker-compose.deploy.yml
+# Тянем latest или фиксируем конкретный SHA через IMAGE_TAG в .env.
+docker compose -f docker-compose.deploy.yml --env-file .env pull
+docker compose -f docker-compose.deploy.yml --env-file .env up -d migrate
+docker compose -f docker-compose.deploy.yml --env-file .env up -d server worker
 ```

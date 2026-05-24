@@ -17,7 +17,7 @@ async def _ping_db(session: SessionDep) -> str:
     try:
         await asyncio.wait_for(session.execute(text("SELECT 1")), CHECK_TIMEOUT_SECONDS)
         return "ok"
-    except Exception:  # noqa: BLE001
+    except Exception:
         return "degraded"
 
 
@@ -28,7 +28,7 @@ async def _ping_storage(storage: S3Client) -> str:
             CHECK_TIMEOUT_SECONDS,
         )
         return "ok"
-    except Exception:  # noqa: BLE001
+    except Exception:
         return "degraded"
 
 

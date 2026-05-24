@@ -33,10 +33,10 @@ os.environ.setdefault("S3_ENDPOINT_URL", "http://localhost:9000")
 os.environ.setdefault("S3_ACCESS_KEY", "test")
 os.environ.setdefault("S3_SECRET_KEY", "test")
 
-from app.api.v1.deps import get_session, get_storage  # noqa: E402
-from app.config import settings  # noqa: E402
-from app.main import app  # noqa: E402
-from app.storage import S3Client  # noqa: E402
+from app.api.v1.deps import get_session, get_storage
+from app.config import settings
+from app.main import app
+from app.storage import S3Client
 
 
 class FakeS3Client(S3Client):
