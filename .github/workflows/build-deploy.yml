@@ -119,5 +119,18 @@ jobs:
             docker compose -f docker-compose.deploy.yml --env-file .env pull server worker
             docker compose -f docker-compose.deploy.yml --env-file .env up -d --no-deps migrate
             docker compose -f docker-compose.deploy.yml --env-file .env up -d --no-deps server worker
-            sleep 5
-            curl -fsS https://dev-api.cfi-messenger.ru/api/v1/health
+            # Retry healthcheck: uvicorn успевает подняться за ~3-10 сек, но
+            # nginx-proxy в это время отдаёт 502 «upstream not ready». 30 сек ×
+            # 2-сек интервалом = с большим запасом покрывает cold-start.
+            for i in $(seq 1 15); do
+              if curl -fsS https://dev-api.cfi-messenger.ru/api/v1/health; then
+                echo
+                echo "Healthcheck passed after ${i} attempt(s)."
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "Healthcheck failed after 30s. Last container state:"
+            docker compose -f docker-compose.deploy.yml --env-file .env ps
+            docker compose -f docker-compose.deploy.yml --env-file .env logs --tail=50 server
+            exit 1
