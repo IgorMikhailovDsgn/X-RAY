@@ -62,7 +62,7 @@ async def upload_screenshot(
         content = await upload.read()
         if not content:
             raise ValidationAppError(f"screen_{monitor_index} file is empty")
-        key = f"{screenshot_id}/monitor_{monitor_index}.png"
+        key = f"{settings.s3_prefix_screenshots}{screenshot_id}/monitor_{monitor_index}.png"
         screen_paths[str(monitor_index)] = await storage.upload_bytes(
             bucket=settings.s3_bucket_screenshots,
             key=key,

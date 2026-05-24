@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     s3_bucket_screenshots: str = "screenshots"
     s3_bucket_localize: str = "localize"
     s3_bucket_models: str = "models"
+    # Префиксы в ключах объектов — полезно, когда у тебя один бакет на всё и
+    # хочется логически разделить файлы по «папкам». Пустая строка = без префикса
+    # (так работает MinIO local + bucket-per-resource cloud-сетап).
+    s3_prefix_screenshots: str = ""
+    s3_prefix_localize: str = ""
+    s3_prefix_models: str = ""
 
     redis_url: str = "redis://localhost:6379/0"
 

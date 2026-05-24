@@ -41,7 +41,7 @@ async def upload_localize_image(
         raise ValidationAppError("crop file is empty")
 
     image_id = uuid.uuid4()
-    key = f"{image_id}.png"
+    key = f"{settings.s3_prefix_localize}{image_id}.png"
     localize_path = await storage.upload_bytes(
         bucket=settings.s3_bucket_localize,
         key=key,
