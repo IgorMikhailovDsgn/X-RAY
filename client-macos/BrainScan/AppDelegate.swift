@@ -38,6 +38,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // поставил пользователь (никаких сдвигов из аннотации/детекции).
             self?.widget?.show()
         }
+        annotate.onSent = { [weak self] outcome in
+            guard let widget = self?.widget else { return }
+            let (text, tint): (String, NSColor) = switch outcome {
+            case .uploaded: ("Annotations sent", .systemGreen)
+            case .queued:   ("Saved offline · will sync", .systemYellow)
+            }
+            ToastController.shared.show(
+                text: text,
+                icon: Icon24.check.makeImage(pointSize: 16),
+                iconTint: tint,
+                near: widget.bodyCenterOnScreen
+            )
+        }
         detect.onFinished = { [weak self] in self?.widget?.show() }
         detect.onEdit = { [weak self] prefill in
             guard let self, let widget = self.widget else { return }

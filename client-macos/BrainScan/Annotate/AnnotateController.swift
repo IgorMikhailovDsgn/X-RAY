@@ -8,6 +8,10 @@ final class AnnotateController {
     /// Вызывается при завершении сессии (Back/Esc/Send). Передаёт центр тела
     /// тулбара — AppDelegate вернёт Default-виджет на то же место.
     var onFinished: ((NSPoint) -> Void)?
+    /// Срабатывает на УСПЕШНУЮ отправку Send (или укладывание в оффлайн-очередь).
+    /// `outcome` отличает «ушло на сервер» от «лежит в очереди» — UI показывает
+    /// соответствующий toast.
+    var onSent: ((SyncManager.SubmitOutcome) -> Void)?
 
     private var model = AnnotationModel(entryMode: .annotate)
     private let toolbar = AnnotateToolbarView()
@@ -111,6 +115,7 @@ final class AnnotateController {
         sendTask?.cancel()
         sendTask = nil
         isSending = false
+        toolbar.setSendLoading(nil)   // на случай если finish позвали посреди отправки
         removeKeyMonitor()
         closeDropdown()
         overlay.dismiss()
@@ -252,14 +257,16 @@ final class AnnotateController {
     private func send() {
         guard model.sendEnabled, !isSending else { return }
         isSending = true
-        toolbar.setSendEnabled(false)
+        toolbar.setSendLoading("Sending…")
         let geometry = overlay.snapshots
         let payload = UploadPayload.from(model: model)
         sendTask = Task { [weak self] in
             do {
                 let prepared = try await AnnotationSubmitter.prepare(geometry: geometry)
-                try await SyncManager.shared.submitOrQueue(payload: payload, snapshots: prepared)
-                await MainActor.run { self?.finish() }
+                let outcome = try await SyncManager.shared.submitOrQueue(
+                    payload: payload, snapshots: prepared
+                )
+                await MainActor.run { self?.finishSent(outcome: outcome) }
             } catch is CancellationError {
                 // финиш уже произошёл — UI закрыт, тихо выходим.
             } catch {
@@ -269,9 +276,20 @@ final class AnnotateController {
     }
 
     @MainActor
+    private func finishSent(outcome: SyncManager.SubmitOutcome) {
+        // Порядок важен: finish() сначала вернёт виджет на экран (через onFinished),
+        // потом onSent повесит toast над уже видимым виджетом.
+        finish()
+        onSent?(outcome)
+    }
+
+    @MainActor
     private func handleSendFailure(_ error: Error) {
         isSending = false
+        toolbar.setSendLoading(nil)
         toolbar.setSendEnabled(model.sendEnabled)
+        NSLog("[SEND] failure: %@",
+              (error as? LocalizedError)?.errorDescription ?? String(describing: error))
         let alert = NSAlert()
         alert.messageText = "Could not send annotation"
         alert.informativeText = (error as? LocalizedError)?.errorDescription

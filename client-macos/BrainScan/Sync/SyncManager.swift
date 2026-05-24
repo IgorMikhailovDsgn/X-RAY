@@ -16,6 +16,9 @@ final class SyncManager: ObservableObject {
         case draining(uploaded: Int, total: Int)   // сейчас отправляем
     }
 
+    /// Результат UI Send'a: пошло на сервер или легло в локальную очередь.
+    enum SubmitOutcome { case uploaded, queued }
+
     static let shared = SyncManager()
 
     @Published private(set) var state: State = .idle
@@ -53,22 +56,26 @@ final class SyncManager: ObservableObject {
 
     /// Попытка отправить разметку с предзахваченными снимками. Сетевые сбои
     /// и оффлайн → элемент откладывается в очередь, метод возвращается без ошибки
-    /// (пользователю отправка «удалась» — она сохранена локально).
-    func submitOrQueue(payload: UploadPayload, snapshots: PreparedSnapshots) async throws {
+    /// (пользователю отправка «удалась» — она сохранена локально). Возвращает
+    /// `SubmitOutcome` чтобы UI мог показать соответствующий toast.
+    @discardableResult
+    func submitOrQueue(payload: UploadPayload,
+                       snapshots: PreparedSnapshots) async throws -> SubmitOutcome {
         if online {
             do {
                 try await AnnotationSubmitter.upload(payload: payload, snapshots: snapshots)
                 refreshStateFromDisk()
-                return
+                return .uploaded
             } catch let error as APIError {
                 if case .network = error {
                     try persist(payload: payload, snapshots: snapshots)
-                    return
+                    return .queued
                 }
                 throw error
             }
         } else {
             try persist(payload: payload, snapshots: snapshots)
+            return .queued
         }
     }
 

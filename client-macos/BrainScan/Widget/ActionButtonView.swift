@@ -19,6 +19,9 @@ final class ActionButtonView: NSView {
     private let labelView = NSTextField(labelWithString: "")
     private let backgroundLayer = CALayer()
     private var trackingArea: NSTrackingArea?
+    /// Активен `setLoading(...)` — кнопка глуха к клику и пульсирует, лейбл подменён
+    /// (например, на "Sending…"). Отдельно от `state`, чтобы не плодить кейсы в enum.
+    private var isLoading = false
     private(set) var state: VisualState = .default {
         didSet {
             applyState()
@@ -119,22 +122,53 @@ final class ActionButtonView: NSView {
     }
 
     override func mouseEntered(with _: NSEvent) {
-        guard state != .disabled else { return }
+        guard state != .disabled, !isLoading else { return }
         state = .active
     }
 
     override func mouseExited(with _: NSEvent) {
-        guard state != .disabled else { return }
+        guard state != .disabled, !isLoading else { return }
         state = .default
     }
 
     override func mouseUp(with _: NSEvent) {
-        guard state != .disabled else { return }
+        guard state != .disabled, !isLoading else { return }
         onClick?()
     }
 
     func setEnabled(_ enabled: Bool) {
         state = enabled ? .default : .disabled
+    }
+
+    /// Включить «loading»-режим (например, на время Send): меняет лейбл, запускает
+    /// pulse-анимацию (100↔50% opacity у всего view), глушит клики/hover. nil → выключить.
+    func setLoading(_ message: String?) {
+        if let message {
+            isLoading = true
+            labelView.stringValue = message
+            startPulse()
+        } else {
+            isLoading = false
+            labelView.stringValue = label
+            stopPulse()
+        }
+    }
+
+    private func startPulse() {
+        guard layer?.animation(forKey: "pulse") == nil else { return }
+        let anim = CABasicAnimation(keyPath: "opacity")
+        anim.fromValue = 1.0
+        anim.toValue = 0.5
+        anim.duration = 0.75
+        anim.autoreverses = true
+        anim.repeatCount = .infinity
+        anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer?.add(anim, forKey: "pulse")
+    }
+
+    private func stopPulse() {
+        layer?.removeAnimation(forKey: "pulse")
+        layer?.opacity = 1.0
     }
 
     private func applyState() {

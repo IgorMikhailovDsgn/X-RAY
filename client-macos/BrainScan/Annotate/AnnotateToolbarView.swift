@@ -128,6 +128,12 @@ final class AnnotateToolbarView: NSView {
         sendButton.setEnabled(enabled)
     }
 
+    /// Loading-режим Send: меняет лейбл (например, на "Sending…") и запускает pulse.
+    /// `nil` — выключить и вернуться к стандартному поведению.
+    func setSendLoading(_ message: String?) {
+        sendButton.setLoading(message)
+    }
+
     /// Цвет status-точки — отражает реальный статус сервера/очереди (см. AppDelegate).
     func setDotColor(_ color: NSColor) {
         statusDot.fillColor = color
