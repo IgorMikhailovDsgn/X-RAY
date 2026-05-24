@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # BrainScan ML worker — Celery worker + beat scheduler. uv-managed Python 3.12.
+# Build context = repo root (для единообразия с server/Dockerfile).
 # Phase 6 (real training): сюда добавятся torch/ultralytics/opencv — нужен отдельный
 # тяжёлый image. Сейчас минимальная сборка под Celery-таски-заглушки.
 
@@ -12,10 +13,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN pip install --no-cache-dir uv==0.5.13
 
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
+COPY ml/pyproject.toml ml/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY . .
+COPY ml/ ./
 RUN uv sync --frozen --no-dev
 
 

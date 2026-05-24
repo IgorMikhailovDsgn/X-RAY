@@ -63,8 +63,9 @@ targets:
         Debug:
           BRAINSCAN_API_BASE_URL: http://localhost:8000/api/v1
         Staging:
-          # TODO: подставить реальный stage-URL после поднятия TimeWebCloud dev/stage.
-          BRAINSCAN_API_BASE_URL: https://stage-api.brainscan.example.com/api/v1
+          # Dev-окружение в TimeWebCloud (Phase 2). Меняем на отдельный stage-домен,
+          # когда поднимем настоящий stage в Phase 4.
+          BRAINSCAN_API_BASE_URL: https://dev-api.cfi-messenger.ru/api/v1
         Release:
           # TODO: подставить реальный prod-URL.
           BRAINSCAN_API_BASE_URL: https://api.brainscan.example.com/api/v1

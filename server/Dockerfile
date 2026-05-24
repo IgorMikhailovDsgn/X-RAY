@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # BrainScan FastAPI app — multi-stage, uv-managed Python 3.12.
+# Build context = repo root (нужен docs/brainscan_schema.sql для alembic-миграции).
 
 FROM python:3.12-slim AS builder
 
@@ -12,11 +13,11 @@ RUN pip install --no-cache-dir uv==0.5.13
 WORKDIR /app
 
 # Сначала только манифесты — кэш слоя переиспользуется, пока зависимости не меняются.
-COPY pyproject.toml uv.lock ./
+COPY server/pyproject.toml server/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Исходники + установка проекта в .venv.
-COPY . .
+COPY server/ ./
 RUN uv sync --frozen --no-dev
 
 
@@ -35,7 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 RUN useradd --create-home --shell /bin/bash --uid 1000 app
 WORKDIR /app
 COPY --from=builder /app /app
-RUN chown -R app:app /app
+# Schema-источник для миграции 0001_initial — она читает `/docs/brainscan_schema.sql`
+# через Path(__file__).parents[3] / "docs" / ... (см. server/alembic/versions/0001_initial.py).
+COPY docs/brainscan_schema.sql /docs/brainscan_schema.sql
+RUN chown -R app:app /app /docs
 USER app
 
 EXPOSE 8000

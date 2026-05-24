@@ -1,0 +1,32 @@
+# Build context для server/ml = корень репо (нужен docs/brainscan_schema.sql).
+# Исключаем всё лишнее, чтобы контекст оставался лёгким.
+
+.docker-data/
+.git/
+.github/
+.idea/
+.vscode/
+.DS_Store
+.claude/
+
+# Клиент в server/worker не нужен.
+client-macos/
+deploy/
+
+# Питон-артефакты и виртуальные окружения.
+**/__pycache__/
+*.pyc
+*.pyo
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+.coverage
+htmlcov/
+
+# Локальные конфиги — production-конфиг прокидывается через env-vars.
+**/.env
+**/.env.*
+!**/.env.example
+
+# README остаются — pyproject.toml на них ссылается.

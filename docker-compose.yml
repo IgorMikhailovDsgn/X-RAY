@@ -88,7 +88,8 @@ services:
     # Server и worker зависят от service_completed_successfully — гарантия,
     # что схема актуальна на старте.
     build:
-      context: ./server
+      context: .
+      dockerfile: server/Dockerfile
     container_name: brainscan_migrate
     env_file: server/.env
     environment:
@@ -102,7 +103,8 @@ services:
 
   server:
     build:
-      context: ./server
+      context: .
+      dockerfile: server/Dockerfile
     container_name: brainscan_server
     env_file: server/.env
     environment:
@@ -118,7 +120,8 @@ services:
 
   worker:
     build:
-      context: ./ml
+      context: .
+      dockerfile: ml/Dockerfile
     container_name: brainscan_worker
     env_file: ml/.env
     environment:

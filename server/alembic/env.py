@@ -6,7 +6,10 @@ from sqlalchemy import engine_from_config, pool
 from app.config import settings
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
+# configparser в alembic интерпретирует одиночный `%` как начало interpolation
+# (`%(name)s`), что ломается на URL-encoded паролях вида `%5E%24...`. Удваиваем
+# `%` → `%%` — это конвенция configparser'а для литерального процента.
+config.set_main_option("sqlalchemy.url", settings.alembic_database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
