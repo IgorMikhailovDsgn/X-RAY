@@ -50,7 +50,11 @@ def _build_client() -> Any:
         aws_access_key_id=settings.s3_access_key,
         aws_secret_access_key=settings.s3_secret_key,
         region_name=settings.s3_region,
-        config=Config(signature_version="s3v4"),
+        # path-style addressing совместим и с MinIO, и с провайдерами вроде
+        # TimeWebCloud, у которых имя бакета (часто UUID) не превратишь в валидный
+        # virtual-host субдомен. По умолчанию botocore выбирает virtual-host для
+        # HTTPS — для нашего multi-провайдерного случая фиксируем path.
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
     )
 
 
