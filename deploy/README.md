@@ -149,10 +149,58 @@ docker compose -f docker-compose.deploy.yml --env-file .env up -d --no-deps serv
 
 (SHA брать из истории GHCR-пакета — там видны все собранные теги.)
 
+## MLflow tracking server (Phase 4 pre-work)
+
+MLflow поднят на dev VPS под `https://mlflow.cfi-messenger.ru/` за nginx-proxy с
+basic-auth. UI для просмотра экспериментов; API для GPU-воркеров (когда будут).
+
+- **Image**: `brainscan/mlflow:2.19.0` — собирается из `mlflow.Dockerfile`
+  локально на VPS (`docker compose build mlflow`). В GHCR не пушим — образ
+  редко меняется, build занимает ~2 мин.
+- **Backend store**: SQLite в named volume `mlflow_data` (`/mlflow/mlflow.db`).
+  Single-writer достаточно для нашего сетапа (один-два GPU-воркера). Если
+  упрёмся в производительность — мигрируем на managed Postgres.
+- **Artifact store**: S3 (тот же бакет `46f4a57c-...`, prefix `mlflow/`).
+  MLflow подписывает запросы через `AWS_ACCESS_KEY_ID`/`SECRET` env-vars.
+- **Auth**: nginx-proxy basic-auth, файл в named volume `vhost-htpasswd`
+  → `/etc/nginx/htpasswd/mlflow.cfi-messenger.ru`. Формат: `igor:$apr1$...`
+  (APR1 hash через `openssl passwd -apr1`). Пароль лежит у Igor в Keychain.
+
+### Bootstrap (выполнено один раз 2026-05-25)
+
+```bash
+# 1. A-запись mlflow.cfi-messenger.ru → 5.42.122.92 (dev VPS).
+# 2. Доливаем env-vars в deploy/.env:
+echo "MLFLOW_DOMAIN=mlflow.cfi-messenger.ru" >> ~/brainscan/deploy/.env
+echo "MLFLOW_S3_PREFIX=mlflow/" >> ~/brainscan/deploy/.env
+# 3. Собираем образ:
+docker compose -f docker-compose.deploy.yml --env-file .env build mlflow
+# 4. Поднимаем nginx-proxy с новым vhost-htpasswd volume + mlflow:
+docker compose -f docker-compose.deploy.yml --env-file .env up -d --no-deps nginx-proxy mlflow
+# 5. Кладём htpasswd-файл в volume и перезапускаем nginx, чтобы он подцепил auth:
+PASS='<сгенерить openssl rand -base64 24>'
+HASH=$(openssl passwd -apr1 "$PASS")
+echo "igor:$HASH" | docker cp - brainscan_nginx:/etc/nginx/htpasswd/mlflow.cfi-messenger.ru
+docker restart brainscan_nginx
+# 6. Smoke:
+curl -sS -o /dev/null -w "%{http_code}\n" https://mlflow.cfi-messenger.ru/             # 401
+curl -sS -o /dev/null -w "%{http_code}\n" -u "igor:$PASS" https://mlflow.cfi-messenger.ru/  # 200
+```
+
+### Смена пароля
+
+```bash
+NEW_PASS='<новый>'
+HASH=$(openssl passwd -apr1 "$NEW_PASS")
+echo "igor:$HASH" | docker cp - brainscan_nginx:/etc/nginx/htpasswd/mlflow.cfi-messenger.ru
+docker restart brainscan_nginx
+```
+
 ## Что дальше
 
-Phase 4 — отдельные stage/prod VPS с promotion-flow через workflow_dispatch.
-Phase 5 — observability (structured logs, метрики).
+Phase 4 (продолжение) — queue split в `ml/workers/celery_app.py`, аренда GPU-инстанса.
+Phase 6 — Prod (отложен).
+Phase 7 — observability (structured logs, метрики).
 
 ## Troubleshooting
 

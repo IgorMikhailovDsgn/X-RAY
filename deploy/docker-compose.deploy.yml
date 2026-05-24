@@ -21,10 +21,13 @@ services:
       - "443:443"
     # client_max_body_size задаётся per-vhost через `/etc/nginx/vhost.d/<DOMAIN>`
     # (см. deploy/README.md, шаг про post-deploy `client_max_body_size`).
+    # basic-auth: nginx-proxy ищет файл /etc/nginx/htpasswd/<DOMAIN> и если есть —
+    # вешает HTTP Basic Auth на vhost. Создаём вручную для MLflow (см. README).
     volumes:
       - /var/run/docker.sock:/tmp/docker.sock:ro
       - certs:/etc/nginx/certs
       - vhost:/etc/nginx/vhost.d
+      - vhost-htpasswd:/etc/nginx/htpasswd
       - html:/usr/share/nginx/html
     restart: unless-stopped
 
@@ -96,8 +99,36 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # MLflow tracking server. UI/API под mlflow.cfi-messenger.ru за nginx-proxy +
+  # basic-auth (htpasswd в /etc/nginx/htpasswd/<domain> внутри тома vhost-htpasswd,
+  # см. deploy/README.md → раздел про MLflow setup). SQLite-метаданные в
+  # mlflow_data, артефакты в S3 (тот же бакет, prefix mlflow/).
+  mlflow:
+    build:
+      context: .
+      dockerfile: mlflow.Dockerfile
+    image: brainscan/mlflow:2.19.0
+    container_name: brainscan_mlflow
+    environment:
+      # nginx-proxy подхватит, выпустит cert через acme-companion.
+      VIRTUAL_HOST: ${MLFLOW_DOMAIN}
+      VIRTUAL_PORT: "5000"
+      LETSENCRYPT_HOST: ${MLFLOW_DOMAIN}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+      # S3-креды для подписи presigned URLs артефактов.
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      MLFLOW_S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
+      MLFLOW_S3_BUCKET: ${S3_BUCKET_MODELS}
+      MLFLOW_S3_PREFIX: ${MLFLOW_S3_PREFIX:-mlflow/}
+    volumes:
+      - mlflow_data:/mlflow
+    restart: unless-stopped
+
 volumes:
   certs:
   vhost:
+  vhost-htpasswd:
   html:
   acme:
+  mlflow_data:
