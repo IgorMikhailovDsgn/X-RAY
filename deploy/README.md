@@ -70,7 +70,22 @@ docker compose -f docker-compose.deploy.yml --env-file .env up -d
 acme-companion увидит `LETSENCRYPT_HOST` у сервера и за ~30 секунд выпустит
 сертификат через Let's Encrypt HTTP-01 challenge.
 
-### 4. Smoke-test
+### 4. Поднять лимит body-size (для multi-monitor screenshot upload)
+
+nginx-proxy по умолчанию режет тело запроса до 1MB → `/api/v1/screenshots` с
+несколькими Retina-PNG сразу отдаёт 413. Кладём `client_max_body_size 50m;` в
+`vhost.d/<DOMAIN>` (named volume `vhost` сохраняется между перезапусками):
+
+```bash
+docker exec brainscan_nginx sh -c \
+  'cat > /etc/nginx/vhost.d/'"$API_DOMAIN"' <<EOF
+client_max_body_size 50m;
+EOF
+nginx -s reload'
+```
+Повторять при добавлении новых доменов.
+
+### 5. Smoke-test
 
 ```bash
 # С локальной машины:
