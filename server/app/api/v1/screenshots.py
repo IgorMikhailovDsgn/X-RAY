@@ -57,12 +57,21 @@ async def upload_screenshot(
         )
 
     screenshot_id = uuid.uuid4()
+    # captured_at нужен ДО загрузки — он попадает в S3-ключ как YYYY-MM-партиция.
+    captured_at = meta_payload.captured_at or datetime.now(UTC)
+    yyyymm = captured_at.astimezone(UTC).strftime("%Y-%m")
+
     screen_paths: dict[str, str] = {}
     for monitor_index, upload in sorted(files.items()):
         content = await upload.read()
         if not content:
             raise ValidationAppError(f"screen_{monitor_index} file is empty")
-        key = f"{settings.s3_prefix_screenshots}{screenshot_id}/monitor_{monitor_index}.png"
+        # Layout: <prefix><device_id>/<YYYY-MM>/<screenshot_id>_m<N>.png.
+        # device_id уже отвалидирован regex'ом в ScreenshotMeta — `/` и `..` не пройдут.
+        key = (
+            f"{settings.s3_prefix_screenshots}"
+            f"{meta_payload.device_id}/{yyyymm}/{screenshot_id}_m{monitor_index}.png"
+        )
         screen_paths[str(monitor_index)] = await storage.upload_bytes(
             bucket=settings.s3_bucket_screenshots,
             key=key,
@@ -70,7 +79,6 @@ async def upload_screenshot(
             content_type=_ALLOWED_CONTENT_TYPE,
         )
 
-    captured_at = meta_payload.captured_at or datetime.now(UTC)
     screenshot = Screenshot(
         id=screenshot_id,
         captured_at=captured_at,

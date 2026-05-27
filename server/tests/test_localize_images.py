@@ -1,6 +1,12 @@
 import json
+import re
 
 from tests.test_screenshots import PNG_1X1
+
+# Layout (после Phase 4): <device_id>/<YYYY-MM>/<image_id>.png
+LOCALIZE_KEY_RE = re.compile(
+    r"^[A-Za-z0-9_-]+/\d{4}-\d{2}/[0-9a-f-]{36}\.png$"
+)
 
 
 async def _create_screenshot_and_annotation(client, auth_headers) -> tuple[str, str]:
@@ -66,6 +72,12 @@ async def test_localize_image_with_annotation(client, auth_headers, fake_s3):
     assert body["bbox"] == {"x": 10, "y": 20, "w": 100, "h": 80}
     assert body["localize_path"].startswith("s3://localize/")
     assert len(fake_s3.objects) == 2  # 1 screenshot + 1 crop
+    # Phase 4 layout: crop key = mac-1/<YYYY-MM>/<image_id>.png
+    localize_keys = [k for b, k in fake_s3.objects if b == "localize"]
+    assert len(localize_keys) == 1
+    key = localize_keys[0]
+    assert key.startswith("mac-1/"), f"localize key not under device folder: {key}"
+    assert LOCALIZE_KEY_RE.match(key), f"key not in new layout: {key}"
 
 
 async def test_localize_image_wrong_content_type_rejected(client, auth_headers):
