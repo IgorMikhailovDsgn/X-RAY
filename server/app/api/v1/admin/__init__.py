@@ -6,7 +6,9 @@ datasets, training — добавляются по мере реализации
 
 from fastapi import APIRouter
 
-from app.api.v1.admin import models
+from app.api.v1.admin import datasets, models, training
 
 router = APIRouter()
 router.include_router(models.router, prefix="/models", tags=["admin:models"])
+router.include_router(datasets.router, prefix="/datasets", tags=["admin:datasets"])
+router.include_router(training.router, prefix="/training", tags=["admin:training"])

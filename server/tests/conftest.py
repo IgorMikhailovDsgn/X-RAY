@@ -147,3 +147,21 @@ async def auth(client: AsyncClient) -> dict[str, Any]:
 @pytest.fixture
 def auth_headers(auth: dict[str, Any]) -> dict[str, str]:
     return {"Authorization": f"Bearer {auth['tokens']['access_token']}"}
+
+
+@pytest.fixture
+async def admin_headers(client: AsyncClient, sessionmaker, auth) -> dict[str, str]:
+    """Регистрирует обычного юзера и промоутит до admin прямым UPDATE.
+    Register endpoint о ролях не знает (это осознанный design — Phase 6
+    рассказывает почему: role даётся через миграцию/руками)."""
+    # Импорт локально, чтобы не плодить FK-нагрузку при load-time.
+    from sqlalchemy import update
+
+    from app.models.user import User
+
+    async with sessionmaker() as session:
+        await session.execute(
+            update(User).where(User.email == auth["email"]).values(role="admin")
+        )
+        await session.commit()
+    return {"Authorization": f"Bearer {auth['tokens']['access_token']}"}

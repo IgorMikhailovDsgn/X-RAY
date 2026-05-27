@@ -6,25 +6,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
 from httpx import AsyncClient
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from app.models.mlops import Deployment, Model
-from app.models.user import User
-
-
-@pytest.fixture
-async def admin_headers(client: AsyncClient, sessionmaker, auth) -> dict[str, str]:
-    # auth-фикстура уже создала пользователя как 'annotator'.
-    # Промоутим его в admin прямо в БД — registration endpoint в принципе не знает
-    # о ролях, и это правильно (role даётся осознанно через миграцию/руками).
-    async with sessionmaker() as session:
-        await session.execute(
-            update(User).where(User.email == auth["email"]).values(role="admin")
-        )
-        await session.commit()
-    return {"Authorization": f"Bearer {auth['tokens']['access_token']}"}
 
 
 async def _insert_model(

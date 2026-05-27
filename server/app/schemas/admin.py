@@ -1,7 +1,7 @@
 """Pydantic-схемы для /api/v1/admin/* endpoint'ов.
 
 Phase 6 — model lifecycle (list/get/promote/archive).
-Phase 5 (когда дойдём) — добавит DatasetPreviewResponse, BuildRequest и др.
+Phase 5b — datasets/build, datasets/check, datasets/builds, training/mode.
 """
 
 from __future__ import annotations
@@ -12,8 +12,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from app.services.dataset_pipeline import BuildStatus
+from app.services.dataset_stats import DatasetStats
+
 ModelType = Literal["localize", "tumor"]
 ModelStatus = Literal["candidate", "prod", "archived", "failed"]
+TrainingMode = Literal["auto", "manual", "suspended"]
 
 
 class AdminModel(BaseModel):
@@ -36,3 +40,57 @@ class PromoteResponse(BaseModel):
 
     promoted: AdminModel | None = None
     archived: AdminModel | None = None
+
+
+# --- Phase 5b: datasets/build, check, mode, builds audit ---
+
+
+class BuildRequest(BaseModel):
+    model_type: ModelType
+
+
+class BuildResponse(BaseModel):
+    status: BuildStatus
+    build_id: uuid.UUID | None = None
+    dataset_id: uuid.UUID | None = None
+    candidate_id: uuid.UUID | None = None
+    stats: DatasetStats | None = None
+    gate_passed: bool | None = None
+    gate_issues: list[str] | None = None
+
+
+class CheckResponse(BaseModel):
+    model_type: ModelType
+    mode: TrainingMode
+    stats: DatasetStats
+    gate_passed: bool
+    gate_issues: list[str]
+    ready_to_build: bool  # gate_passed AND mode != 'suspended' AND total_free > 0
+
+
+class TrainingModeResponse(BaseModel):
+    # JSON-объект с режимом для каждой модели.
+    localize: TrainingMode
+    tumor: TrainingMode
+
+
+class TrainingModeUpdate(BaseModel):
+    # Partial-update: переданные ключи перетирают существующее значение.
+    localize: TrainingMode | None = None
+    tumor: TrainingMode | None = None
+
+
+class BuildAuditRow(BaseModel):
+    id: uuid.UUID
+    model_type: ModelType
+    status: Literal["in_progress", "completed", "failed"]
+    triggered_by: str
+    mode: Literal["auto", "manual"]
+    dataset_id: uuid.UUID | None
+    started_at: datetime
+    finished_at: datetime | None
+    error: str | None
+
+
+class BuildAuditList(BaseModel):
+    builds: list[BuildAuditRow]
