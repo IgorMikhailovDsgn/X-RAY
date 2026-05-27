@@ -6,6 +6,7 @@ from app.api.v1 import (
     auth,
     detect,
     health,
+    internal,
     localize_annotations,
     localize_images,
     models,
@@ -45,3 +46,4 @@ app.include_router(
 app.include_router(tumor_annotations.router, prefix=f"{API_PREFIX}/tumor-annotations")
 app.include_router(detect.router, prefix=f"{API_PREFIX}/detect")
 app.include_router(admin.router, prefix=f"{API_PREFIX}/admin")
+app.include_router(internal.router, prefix=f"{API_PREFIX}/internal", tags=["internal"])

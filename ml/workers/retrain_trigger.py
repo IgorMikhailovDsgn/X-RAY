@@ -1,14 +1,21 @@
-"""Триггер дообучения. Раз в сутки проверяет накопление новых аннотаций
-с момента последнего датасета. При превышении порога RETRAIN_THRESHOLD
-запускает соответствующий train-таск.
+"""Cron-таска: спрашивает server'а сформировать датасет для тренировки.
 
-В MVP реальная тренировка отключена (см. train_localize / train_tumor).
+Раньше (Phase 5 до 'e') это был стаб с хардкодом `new_count = 0`. Теперь
+дёргает internal-endpoint server'а: реальная логика выбора режима
+(auto/manual/suspended), counts и gate-evaluation живёт там — переиспользуем
+один пайплайн в обе стороны.
+
+Beat schedule (см. celery_app.py): раз в сутки в 3:00/3:15 UTC.
 """
 
+from __future__ import annotations
+
 import logging
-import os
 from typing import Literal
 
+import httpx
+
+from workers._internal_api import trigger_build_for_cron
 from workers.celery_app import app
 
 logger = logging.getLogger(__name__)
@@ -18,24 +25,28 @@ ModelType = Literal["localize", "tumor"]
 
 @app.task(name="workers.retrain_trigger.check_and_trigger")
 def check_and_trigger(model_type: ModelType) -> dict[str, object]:
-    threshold = int(os.environ.get("RETRAIN_THRESHOLD", "1000"))
-
-    # TODO Phase B/E: реальный SQL
-    # Сейчас stub — счётчик новых аннотаций берётся из БД:
-    #   SELECT COUNT(*)
-    #   FROM {model_type}_annotations
-    #   WHERE annotated_at > (SELECT COALESCE(MAX(created_at), '1970-01-01')
-    #                         FROM datasets WHERE model_type = :model_type);
-    new_count = 0
-
-    if new_count < threshold:
-        logger.info(
-            "retrain_trigger[%s]: %d/%d new annotations, threshold not reached",
-            model_type, new_count, threshold,
+    try:
+        result = trigger_build_for_cron(model_type)
+    except httpx.HTTPError as exc:
+        # Server недоступен или ответил >=400 — не падаем таску, чтобы Celery
+        # не ретраил без exponential backoff'а. Следующий cron-tick попробует
+        # снова. Логом сигнализируем мониторингу.
+        logger.exception(
+            "retrain_trigger[%s]: internal API failed: %s", model_type, exc
         )
-        return {"model_type": model_type, "triggered": False, "new_annotations": new_count}
+        return {
+            "model_type": model_type,
+            "ok": False,
+            "error": str(exc),
+        }
 
-    task_name = f"workers.train_{model_type}.train"
-    app.send_task(task_name)
-    logger.info("retrain_trigger[%s]: triggered %s", model_type, task_name)
-    return {"model_type": model_type, "triggered": True, "new_annotations": new_count}
+    status = result.get("status")
+    logger.info(
+        "retrain_trigger[%s]: status=%s build_id=%s dataset_id=%s candidate_id=%s",
+        model_type,
+        status,
+        result.get("build_id"),
+        result.get("dataset_id"),
+        result.get("candidate_id"),
+    )
+    return {"model_type": model_type, "ok": True, "result": result}

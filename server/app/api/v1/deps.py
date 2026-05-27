@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import decode_token
+from app.config import settings
 from app.core.exceptions import AuthError, ForbiddenError
 from app.db import SessionLocal
 from app.models.user import User
@@ -57,3 +58,21 @@ def get_storage() -> S3Client:
 
 
 StorageDep = Annotated[S3Client, Depends(get_storage)]
+
+
+async def require_internal_token(
+    x_internal_token: Annotated[
+        str | None, Header(alias="X-Internal-Token")
+    ] = None,
+) -> None:
+    """Гейтит /api/v1/internal/* — endpoint'ы, которые дёргают cron-таски
+    воркера. JWT не требуется (worker не пользователь), только shared secret
+    в заголовке. Если на сервере токен не настроен — 401 для всех (fail-safe).
+    """
+    if not settings.internal_api_token:
+        raise AuthError("Internal API not configured")
+    if x_internal_token != settings.internal_api_token:
+        raise AuthError("Invalid internal token")
+
+
+InternalAuth = Annotated[None, Depends(require_internal_token)]

@@ -42,6 +42,11 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379/0"
 
+    # Shared secret для internal API (cron-таски воркера дёргают endpoint'ы на
+    # server'е). Без этого токена /api/v1/internal/* отвечает 401, даже с
+    # валидным JWT. None = endpoint'ы недоступны (default локально).
+    internal_api_token: str | None = None
+
     app_version: str = Field(default="0.1.0")
     log_level: str = "INFO"
 

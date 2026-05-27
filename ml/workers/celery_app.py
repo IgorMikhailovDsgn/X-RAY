@@ -15,7 +15,12 @@ app = Celery(
     "brainscan",
     broker=REDIS_URL,
     backend=REDIS_URL,
-    include=["workers.train_localize", "workers.train_tumor", "workers.retrain_trigger"],
+    include=[
+        "workers.train_localize",
+        "workers.train_tumor",
+        "workers.retrain_trigger",
+        "workers.maintenance",
+    ],
 )
 
 app.conf.update(
@@ -40,5 +45,12 @@ app.conf.beat_schedule = {
         "task": "workers.retrain_trigger.check_and_trigger",
         "schedule": crontab(hour=3, minute=15),
         "args": ("tumor",),
+    },
+    # Cleanup зависших dataset_builds (in_progress >3h) — ежечасно. Если сервер
+    # упал во время build'а, аннотации останутся зарезервированы; эта таска их
+    # вернёт в свободный пул.
+    "cleanup-hung-builds": {
+        "task": "workers.maintenance.cleanup_hung_builds",
+        "schedule": crontab(minute=17),  # раз в час в :17 (избегаем top-of-hour)
     },
 }
