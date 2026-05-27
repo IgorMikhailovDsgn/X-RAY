@@ -51,3 +51,7 @@ class TumorAnnotation(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     meta_json_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # См. LocalizeAnnotation.dataset_id — двухфазная reservation, Phase 5b/c.
+    dataset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("datasets.id"), nullable=True
+    )

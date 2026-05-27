@@ -82,6 +82,11 @@ def sessionmaker(engine):
 
 
 _TABLES_TO_TRUNCATE = [
+    # Phase 5a additions:
+    "training_candidates",
+    "dataset_builds",
+    # Существовавшие до 5a — порядок (от листьев к корню) важен только без
+    # CASCADE, но мы TRUNCATE с CASCADE, поэтому он только для читаемости.
     "tumor_annotations",
     "tumor_detections",
     "localize_images",

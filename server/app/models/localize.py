@@ -53,6 +53,11 @@ class LocalizeAnnotation(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     meta_json_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # NULL = свободна для следующего dataset'а; value = зарезервирована за этим
+    # dataset'ом (Phase 5b/c). При failed training возвращается в NULL.
+    dataset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("datasets.id"), nullable=True
+    )
 
 
 class LocalizeImage(Base):
