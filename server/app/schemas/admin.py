@@ -54,6 +54,7 @@ class BuildResponse(BaseModel):
     build_id: uuid.UUID | None = None
     dataset_id: uuid.UUID | None = None
     candidate_id: uuid.UUID | None = None
+    celery_task_id: str | None = None
     stats: DatasetStats | None = None
     gate_passed: bool | None = None
     gate_issues: list[str] | None = None

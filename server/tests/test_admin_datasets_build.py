@@ -1,27 +1,28 @@
-"""Phase 5b — POST /admin/datasets/build pipeline-skeleton.
+"""Phase 5b/c — POST /admin/datasets/build pipeline.
 
 Покрытие:
 - RBAC (401/403).
-- Все 5 веток статусов: suspended, not_ready, pending_approval (manual),
-  gate_failed (auto), pending_phase_5c (auto + gate_passed).
+- Все ветки статусов: suspended, not_ready, pending_approval (manual),
+  gate_failed (auto), queued (auto + gate_passed + dataset built).
 - Audit: dataset_builds строки создаются правильно.
 - Collision: советуем partial unique index (advisory lock тестируется отдельно).
+- Phase 5c: реальное создание dataset row + manifest в S3 + reservation
+  annotations + Celery dispatch (мокаем).
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.models.localize import LocalizeAnnotation
-from app.models.mlops import DatasetBuild, SystemSetting, TrainingCandidate
+from app.models.mlops import Dataset, DatasetBuild, SystemSetting, TrainingCandidate
 from app.models.screenshot import Screenshot
-from app.services.gates import GATE_THRESHOLDS
 
 
 async def _set_mode(sessionmaker, **modes: str) -> None:
@@ -213,50 +214,187 @@ async def test_build_auto_returns_gate_failed_on_low_data(
         assert build.mode == "auto"
 
 
-# --- mode = auto + gate_passed → pending_phase_5c ---
+# --- mode = auto + gate_passed → queued (Phase 5c) ---
 
 
-async def test_build_auto_gate_passed_pending_phase_5c(
-    client: AsyncClient, admin_headers, sessionmaker
+async def test_build_auto_gate_passed_creates_dataset(
+    client: AsyncClient,
+    admin_headers,
+    sessionmaker,
+    fake_s3,
+    monkeypatch,
 ):
-    await _set_mode(sessionmaker, localize="auto")
-    # Заливаем достаточный объём данных, чтобы все gates прошли.
-    t = GATE_THRESHOLDS["localize"]
-    screen_id = await _seed_screenshot(sessionmaker)
-    # Делим positive поровну между 2 annotator'ами (anti-bias).
-    half_pos = t["min_positive"] // 2 + 1
-    for i in range(half_pos):
-        await _seed_localize_annotation(
-            sessionmaker,
-            screen_id=screen_id,
-            annotator_id="a",
-            bbox={"x": i, "y": 0, "w": 1, "h": 1},
-        )
-    for i in range(half_pos):
-        await _seed_localize_annotation(
-            sessionmaker,
-            screen_id=screen_id,
-            annotator_id="b",
-            bbox={"x": i, "y": 1, "w": 1, "h": 1},
-        )
-    # Negatives (bbox NULL + action='confirmed' = "тут опухоли нет").
-    # Используем 'confirmed' с detection_id=NULL? Нет, CHECK не пустит, нужен detection.
-    # Проще — 'created' с bbox=null... тоже не пустит. Реально negative = 'confirmed'
-    # с detection. Для теста создадим 'corrected' с bbox=null? — тоже невалидно.
-    # ХАК для тестов: вставляем напрямую через ORM минуя API-валидаторы, но
-    # CHECK-constraint всё равно сработает. Делаем 'corrected' c detection_id=null
-    # и bbox=null — это валидно? Нет (CHECK chk_loc_ann_action_combinations).
-    # Решение: для теста gate_passed мы фокусируемся на counts; negative делаем
-    # через manual SQL bypass — но это сильно усложнит тест. Пропустим этот
-    # путь: gate min_negative=50, проще создать 50 confirmed с FAKE detection.
-    # Но создать detection с FK на model... тоже сложно.
-    # ИТОГ: тест проверяет ветку pending_phase_5c только для случая когда gate
-    # реально проходит — в Phase 5c будет полноценный e2e. Здесь упрощаем
-    # gate-пороги через временный monkeypatch.
-    pytest.skip(
-        "Полный gate_passed требует валидной структуры negative-аннотаций "
-        "(detection_id FK). Покрывается в Phase 5c с фикстурой dataset seeding."
+    """End-to-end happy-path Phase 5c: реальная сборка датасета в auto-режиме."""
+    # Опускаем пороги до минимума — тестируем pipeline, не gate-логику.
+    monkeypatch.setattr(
+        "app.services.gates.GATE_THRESHOLDS",
+        {
+            "localize": {
+                "min_total": 2,
+                "min_positive": 2,
+                "min_negative": 0,
+                "min_annotators": 2,
+                "max_annotator_pct": 100.0,
+            },
+            "tumor": {
+                "min_total": 2,
+                "min_positive": 2,
+                "min_negative": 0,
+                "min_annotators": 2,
+                "max_annotator_pct": 100.0,
+            },
+        },
     )
+    # Перехватываем send_train_task — не хотим публиковать в реальный Redis.
+    monkeypatch.setattr(
+        "app.services.dataset_pipeline.send_train_task",
+        lambda mt, did: "fake-celery-task-id",
+    )
+    await _set_mode(sessionmaker, localize="auto")
+
+    # Два positive annotations от разных annotator'ов с одного screenshot'а.
+    screen_id = await _seed_screenshot(sessionmaker, "mac-1")
+    ann_a = await _seed_localize_annotation(
+        sessionmaker,
+        screen_id=screen_id,
+        annotator_id="a",
+        bbox={"x": 0, "y": 0, "w": 10, "h": 10},
+    )
+    ann_b = await _seed_localize_annotation(
+        sessionmaker,
+        screen_id=screen_id,
+        annotator_id="b",
+        bbox={"x": 5, "y": 5, "w": 10, "h": 10},
+    )
+
+    resp = await client.post(
+        "/api/v1/admin/datasets/build",
+        json={"model_type": "localize"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "queued"
+    assert body["dataset_id"] is not None
+    assert body["build_id"] is not None
+    assert body["celery_task_id"] == "fake-celery-task-id"
+    assert body["gate_passed"] is True
+
+    # 1. Dataset row создан в правильном состоянии.
+    async with sessionmaker() as session:
+        ds = (await session.execute(select(Dataset))).scalar_one()
+        assert ds.status == "ready"
+        assert ds.model_type == "localize"
+        assert ds.version == "v1"
+        assert ds.size_total == 2
+        assert ds.size_train + ds.size_val + ds.size_test == 2
+        assert ds.manifest_path.startswith("s3://")
+        assert ds.stats is not None
+        manifest_key = ds.manifest_path.replace(
+            f"s3://{ds.manifest_path.split('/')[2]}/", "", 1
+        )
+
+    # 2. Manifest загружен в S3 по этому ключу.
+    s3_objects = {k: v for (b, k), v in fake_s3.objects.items()}
+    assert manifest_key in s3_objects, f"manifest not in S3: keys={list(s3_objects)}"
+    manifest = json.loads(s3_objects[manifest_key].decode("utf-8"))
+    assert manifest["model_type"] == "localize"
+    assert manifest["version"] == "v1"
+    assert manifest["dataset_id"] == body["dataset_id"]
+    all_samples = (
+        manifest["splits"]["train"]
+        + manifest["splits"]["val"]
+        + manifest["splits"]["test"]
+    )
+    assert len(all_samples) == 2
+    sample_ann_ids = {s["annotation_id"] for s in all_samples}
+    assert sample_ann_ids == {str(ann_a), str(ann_b)}
+    assert manifest["checksum"].startswith("sha256:")
+    assert "seed" in manifest
+
+    # 3. Annotations зарезервированы (dataset_id заполнен).
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                select(LocalizeAnnotation.id, LocalizeAnnotation.dataset_id)
+            )
+        ).all()
+        assert all(r.dataset_id is not None for r in rows)
+        assert {r.dataset_id for r in rows} == {ds.id}
+
+    # 4. Audit row — completed с dataset_id.
+    async with sessionmaker() as session:
+        build = (await session.execute(select(DatasetBuild))).scalar_one()
+        assert build.status == "completed"
+        assert build.dataset_id == ds.id
+        assert build.error is None
+
+
+async def test_subsequent_build_increments_version(
+    client: AsyncClient,
+    admin_headers,
+    sessionmaker,
+    fake_s3,
+    monkeypatch,
+):
+    """Второй последовательный build даёт v2."""
+    monkeypatch.setattr(
+        "app.services.gates.GATE_THRESHOLDS",
+        {
+            "localize": {
+                "min_total": 1,
+                "min_positive": 1,
+                "min_negative": 0,
+                "min_annotators": 1,
+                "max_annotator_pct": 100.0,
+            },
+            "tumor": {
+                "min_total": 1,
+                "min_positive": 1,
+                "min_negative": 0,
+                "min_annotators": 1,
+                "max_annotator_pct": 100.0,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.dataset_pipeline.send_train_task", lambda mt, did: "t1"
+    )
+    await _set_mode(sessionmaker, localize="auto")
+
+    screen_id = await _seed_screenshot(sessionmaker, "mac-1")
+    await _seed_localize_annotation(
+        sessionmaker,
+        screen_id=screen_id,
+        annotator_id="a",
+        bbox={"x": 0, "y": 0, "w": 1, "h": 1},
+    )
+    r1 = await client.post(
+        "/api/v1/admin/datasets/build",
+        json={"model_type": "localize"},
+        headers=admin_headers,
+    )
+    assert r1.json()["status"] == "queued"
+
+    # Залить ещё аннотацию, повторить build — должна получиться v2.
+    await _seed_localize_annotation(
+        sessionmaker,
+        screen_id=screen_id,
+        annotator_id="a",
+        bbox={"x": 2, "y": 2, "w": 1, "h": 1},
+    )
+    r2 = await client.post(
+        "/api/v1/admin/datasets/build",
+        json={"model_type": "localize"},
+        headers=admin_headers,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["status"] == "queued"
+    async with sessionmaker() as session:
+        versions = sorted(
+            (await session.execute(select(Dataset.version))).scalars().all()
+        )
+        assert versions == ["v1", "v2"]
 
 
 # --------------------------- collision (parallel build) ---------------------------

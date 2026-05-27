@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from sqlalchemy import select
 
-from app.api.v1.deps import AdminUser, SessionDep
+from app.api.v1.deps import AdminUser, SessionDep, StorageDep
 from app.models.mlops import DatasetBuild
 from app.schemas.admin import (
     BuildAuditList,
@@ -38,9 +38,11 @@ async def build_dataset(
     payload: BuildRequest,
     session: SessionDep,
     admin: AdminUser,
+    storage: StorageDep,
 ) -> BuildResponse:
     result = await run_build(
         session,
+        storage,
         payload.model_type,
         triggered_by=f"manual:{admin.id}",
     )

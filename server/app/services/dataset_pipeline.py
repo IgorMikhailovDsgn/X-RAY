@@ -1,6 +1,6 @@
 """Оркестратор формирования датасета — точка входа `POST /admin/datasets/build`.
 
-Phase 5b — skeleton:
+Phase 5b/c:
 - Получает текущий mode (suspended / manual / auto).
 - Захватывает PG advisory lock на (model_type) → 409 при коллизии.
 - Создаёт row в `dataset_builds` со статусом `in_progress`. Partial unique
@@ -11,16 +11,17 @@ Phase 5b — skeleton:
    - `total_free == 0`     → dataset_build.status='failed', return 'not_ready'.
    - `manual`              → создаёт `training_candidate(pending)`, return 'pending_approval'.
    - `auto + gate_failed`  → dataset_build.status='failed', return 'gate_failed'.
-   - `auto + gate_passed`  → Phase 5c: ниже placeholder, помечает build как
-                              `failed` с error='phase_5c_not_implemented'.
+   - `auto + gate_passed`  → Phase 5c: формирует датасет (split + manifest в S3 +
+                              atomic reservation аннотаций), отправляет train task
+                              в Celery, return 'queued'.
 
-Phase 5c заменит ветку `auto + gate_passed` на: создание `datasets(building)`,
-stratified split, manifest.json в S3, reservation аннотаций, отправка задачи
-обучения. Phase 5d допишет approve/skip для candidate'ов.
+Phase 5d допишет approve/skip для candidate'ов; Phase 5e — cron retrain_trigger
+по mode + hung-build cleanup.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Literal
 
@@ -31,17 +32,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ConflictError
 from app.models.mlops import DatasetBuild, TrainingCandidate
+from app.services.celery_client import send_train_task
+from app.services.dataset_builder import DatasetBuildError, build_and_reserve
 from app.services.dataset_stats import DatasetStats, ModelType, compute_stats
 from app.services.gates import evaluate_gates
 from app.services.locks import try_dataset_build_lock
 from app.services.system_settings import get_mode_for
+from app.storage import S3Client
+
+logger = logging.getLogger(__name__)
 
 BuildStatus = Literal[
     "suspended",
     "not_ready",
     "pending_approval",
     "gate_failed",
-    "pending_phase_5c",
+    "queued",
+    "failed",
 ]
 
 
@@ -50,6 +57,7 @@ class BuildResult(BaseModel):
     build_id: uuid.UUID | None = None
     dataset_id: uuid.UUID | None = None
     candidate_id: uuid.UUID | None = None
+    celery_task_id: str | None = None
     stats: DatasetStats | None = None
     gate_passed: bool | None = None
     gate_issues: list[str] | None = None
@@ -59,13 +67,14 @@ class BuildCollisionError(ConflictError):
     error_code = "build_in_progress"
 
 
-class Phase5cNotImplemented(AppError):
-    status_code = 501
-    error_code = "phase_5c_not_implemented"
+class Phase5cBuildError(AppError):
+    status_code = 500
+    error_code = "build_failed"
 
 
 async def run_build(
     session: AsyncSession,
+    s3: S3Client,
     model_type: ModelType,
     *,
     triggered_by: str,
@@ -163,15 +172,43 @@ async def run_build(
             gate_issues=gate_issues,
         )
 
-    # auto + gate_passed — Phase 5c будет создавать dataset+manifest. Сейчас
-    # фиксируем как failed с понятным error, чтобы audit видел попытку.
-    build.status = "failed"
-    build.error = "phase_5c_not_implemented"
+    # auto + gate_passed → реальная сборка датасета (Phase 5c).
+    try:
+        dataset = await build_and_reserve(session, s3, model_type, stats)
+    except DatasetBuildError as exc:
+        build.status = "failed"
+        build.error = f"build_failed: {exc}"
+        build.finished_at = func.now()
+        await session.commit()
+        return BuildResult(
+            status="failed",
+            build_id=build.id,
+            stats=stats,
+            gate_passed=True,
+            gate_issues=[str(exc)],
+        )
+
+    build.status = "completed"
+    build.dataset_id = dataset.id
     build.finished_at = func.now()
+    # Atomic commit: dataset(ready) + reserved annotations + audit row.
+    # Только после успешного COMMIT'а кидаем задачу в Celery — иначе при
+    # rollback'е останется orphan-task в Redis на несуществующий dataset.
     await session.commit()
+
+    try:
+        celery_task_id = send_train_task(model_type, dataset.id)
+    except Exception:
+        # Брокер недоступен — dataset уже зафиксирован как 'ready', можно
+        # переотправить вручную. Не падаем, фиксируем в логах.
+        logger.exception("Failed to dispatch train task for dataset %s", dataset.id)
+        celery_task_id = None
+
     return BuildResult(
-        status="pending_phase_5c",
+        status="queued",
         build_id=build.id,
+        dataset_id=dataset.id,
+        celery_task_id=celery_task_id,
         stats=stats,
         gate_passed=True,
         gate_issues=[],
