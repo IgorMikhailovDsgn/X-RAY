@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import decode_token
-from app.core.exceptions import AuthError
+from app.core.exceptions import AuthError, ForbiddenError
 from app.db import SessionLocal
 from app.models.user import User
 from app.storage import S3Client, get_s3_client
@@ -38,6 +38,18 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def require_admin(user: CurrentUser) -> User:
+    """Гейтит endpoint'ы для админов. Роль читается из БД через get_current_user
+    (JWT-payload роль не везёт, чтобы не приходилось перевыпускать токены при
+    смене роли)."""
+    if user.role != "admin":
+        raise ForbiddenError("Admin role required")
+    return user
+
+
+AdminUser = Annotated[User, Depends(require_admin)]
 
 
 def get_storage() -> S3Client:

@@ -33,6 +33,11 @@ class AuthError(AppError):
     error_code = "unauthorized"
 
 
+class ForbiddenError(AppError):
+    status_code = status.HTTP_403_FORBIDDEN
+    error_code = "forbidden"
+
+
 class ConflictError(AppError):
     status_code = status.HTTP_409_CONFLICT
     error_code = "conflict"

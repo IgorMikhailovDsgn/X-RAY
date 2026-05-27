@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import (
+    admin,
     auth,
     detect,
     health,
@@ -43,3 +44,4 @@ app.include_router(
 )
 app.include_router(tumor_annotations.router, prefix=f"{API_PREFIX}/tumor-annotations")
 app.include_router(detect.router, prefix=f"{API_PREFIX}/detect")
+app.include_router(admin.router, prefix=f"{API_PREFIX}/admin")
