@@ -95,3 +95,35 @@ class BuildAuditRow(BaseModel):
 
 class BuildAuditList(BaseModel):
     builds: list[BuildAuditRow]
+
+
+# --- Phase 5d: training candidates (manual mode queue) ---
+
+
+CandidateStatus = Literal["pending", "approved", "skipped"]
+
+
+class CandidateSummary(BaseModel):
+    id: uuid.UUID
+    model_type: ModelType
+    created_at: datetime
+    annotations_count: int
+    gate_passed: bool
+    status: CandidateStatus
+
+
+class CandidateDetail(CandidateSummary):
+    stats: DatasetStats
+    gate_issues: list[str] | None
+    approved_by: uuid.UUID | None
+    approved_at: datetime | None
+    dataset_id: uuid.UUID | None
+    skip_reason: str | None
+
+
+class CandidateList(BaseModel):
+    candidates: list[CandidateSummary]
+
+
+class CandidateSkipRequest(BaseModel):
+    reason: str

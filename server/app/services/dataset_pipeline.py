@@ -31,7 +31,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ConflictError
-from app.models.mlops import DatasetBuild, TrainingCandidate
+from app.models.mlops import Dataset, DatasetBuild, TrainingCandidate
 from app.services.celery_client import send_train_task
 from app.services.dataset_builder import DatasetBuildError, build_and_reserve
 from app.services.dataset_stats import DatasetStats, ModelType, compute_stats
@@ -188,12 +188,41 @@ async def run_build(
             gate_issues=[str(exc)],
         )
 
+    return await _finalize_queued_build(
+        session,
+        build=build,
+        dataset=dataset,
+        model_type=model_type,
+        stats=stats,
+        gate_passed=True,
+        gate_issues=None,
+    )
+
+
+async def _finalize_queued_build(
+    session: AsyncSession,
+    *,
+    build: DatasetBuild,
+    dataset: Dataset,
+    model_type: ModelType,
+    stats: DatasetStats,
+    gate_passed: bool,
+    gate_issues: list[str] | None,
+    candidate: TrainingCandidate | None = None,
+    admin_id: uuid.UUID | None = None,
+) -> BuildResult:
+    """Финализирует успешный build: помечает audit/candidate, коммитит,
+    отправляет train task. Только после COMMIT'а кидаем в Celery — иначе при
+    откате транзакции остался бы orphan-task в Redis на несуществующий dataset.
+    """
     build.status = "completed"
     build.dataset_id = dataset.id
     build.finished_at = func.now()
-    # Atomic commit: dataset(ready) + reserved annotations + audit row.
-    # Только после успешного COMMIT'а кидаем задачу в Celery — иначе при
-    # rollback'е останется orphan-task в Redis на несуществующий dataset.
+    if candidate is not None:
+        candidate.status = "approved"
+        candidate.approved_by = admin_id
+        candidate.approved_at = func.now()
+        candidate.dataset_id = dataset.id
     await session.commit()
 
     try:
@@ -208,8 +237,130 @@ async def run_build(
         status="queued",
         build_id=build.id,
         dataset_id=dataset.id,
+        candidate_id=candidate.id if candidate else None,
         celery_task_id=celery_task_id,
         stats=stats,
-        gate_passed=True,
-        gate_issues=[],
+        gate_passed=gate_passed,
+        gate_issues=gate_issues or [],
     )
+
+
+# --------------------------- candidate approve/skip (Phase 5d) ---------------------------
+
+
+class CandidateNotFoundError(AppError):
+    status_code = 404
+    error_code = "not_found"
+
+
+class CandidateStateError(ConflictError):
+    error_code = "candidate_state"
+
+
+async def approve_candidate(
+    session: AsyncSession,
+    s3: S3Client,
+    candidate_id: uuid.UUID,
+    admin_id: uuid.UUID,
+) -> BuildResult:
+    """Берёт pending-candidate, перепроверяет свободные аннотации (могло
+    измениться с момента создания candidate'а), собирает dataset через тот же
+    builder что и auto-режим, помечает candidate как approved.
+
+    При неудаче builder'а — candidate остаётся pending (можно retry), audit-row
+    помечается failed.
+    """
+    candidate = await session.get(TrainingCandidate, candidate_id)
+    if candidate is None:
+        raise CandidateNotFoundError(f"Candidate {candidate_id} not found")
+    if candidate.status != "pending":
+        raise CandidateStateError(
+            f"Candidate is {candidate.status!r}, only pending can be approved",
+            details={"candidate_id": str(candidate_id), "status": candidate.status},
+        )
+
+    model_type: ModelType = candidate.model_type  # type: ignore[assignment]
+
+    if not await try_dataset_build_lock(session, model_type):
+        raise BuildCollisionError(
+            f"Build for {model_type} already in progress",
+            details={"model_type": model_type},
+        )
+
+    # Свежие stats — данные могли поменяться с момента создания candidate.
+    stats = await compute_stats(session, model_type)
+    if stats.total_free == 0:
+        raise CandidateStateError(
+            "No free annotations remain — pool drained since candidate was created",
+            details={"candidate_id": str(candidate_id)},
+        )
+
+    build = DatasetBuild(
+        model_type=model_type,
+        mode="manual",
+        triggered_by=f"approve:{admin_id}",
+        status="in_progress",
+    )
+    session.add(build)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise BuildCollisionError(
+            f"Build for {model_type} already in progress",
+            details={"model_type": model_type},
+        ) from exc
+
+    try:
+        dataset = await build_and_reserve(session, s3, model_type, stats)
+    except DatasetBuildError as exc:
+        build.status = "failed"
+        build.error = f"approve_failed: {exc}"
+        build.finished_at = func.now()
+        await session.commit()
+        return BuildResult(
+            status="failed",
+            build_id=build.id,
+            candidate_id=candidate.id,
+            stats=stats,
+            gate_passed=candidate.gate_passed,
+            gate_issues=list(candidate.gate_issues or []),
+        )
+
+    return await _finalize_queued_build(
+        session,
+        build=build,
+        dataset=dataset,
+        model_type=model_type,
+        stats=stats,
+        gate_passed=candidate.gate_passed,
+        gate_issues=list(candidate.gate_issues or []),
+        candidate=candidate,
+        admin_id=admin_id,
+    )
+
+
+async def skip_candidate(
+    session: AsyncSession,
+    candidate_id: uuid.UUID,
+    reason: str,
+    admin_id: uuid.UUID,
+) -> TrainingCandidate:
+    """Помечает candidate'а как skipped. Аннотации НЕ резервируются, остаются
+    свободны для следующего build'а.
+    """
+    candidate = await session.get(TrainingCandidate, candidate_id)
+    if candidate is None:
+        raise CandidateNotFoundError(f"Candidate {candidate_id} not found")
+    if candidate.status != "pending":
+        raise CandidateStateError(
+            f"Candidate is {candidate.status!r}, only pending can be skipped",
+            details={"candidate_id": str(candidate_id), "status": candidate.status},
+        )
+    candidate.status = "skipped"
+    candidate.skip_reason = reason
+    candidate.approved_by = admin_id  # фиксируем кто принял решение skip'нуть
+    candidate.approved_at = func.now()
+    await session.commit()
+    await session.refresh(candidate)
+    return candidate
