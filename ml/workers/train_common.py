@@ -111,13 +111,26 @@ def _prepare_yolo_dataset(
         lbl_dir = workdir / "labels" / split
         img_dir.mkdir(parents=True, exist_ok=True)
         lbl_dir.mkdir(parents=True, exist_ok=True)
+        written = 0
         for s in samples:
             ann_id = s["annotation_id"]
             img_path = img_dir / f"{ann_id}.png"
-            s3_io.download_file(s["crop_path"], img_path)
+            # Crop мог пропасть/побиться в S3 между сборкой манифеста и обучением
+            # (или аплоад с клиента не долетел). Пропускаем сэмпл, а не валим весь
+            # прогон — обучаемся на доступных.
+            try:
+                s3_io.download_file(s["crop_path"], img_path)
+            except Exception as exc:
+                logger.warning(
+                    "train: skip %s — crop unavailable (%s): %s",
+                    ann_id, s.get("crop_path"), exc,
+                )
+                continue
             label = _yolo_label(s.get("bbox"), img_path, Image)
             (lbl_dir / f"{ann_id}.txt").write_text(label, encoding="utf-8")
-        non_empty[split] = len(samples)
+            written += 1
+        if written:
+            non_empty[split] = written
 
     if "train" not in non_empty:
         raise RuntimeError("Manifest has no train samples — cannot train")

@@ -27,9 +27,15 @@ def get_celery() -> Celery:
 
 
 def send_train_task(model_type: str, dataset_id: uuid.UUID) -> str:
-    """Отправляет задачу обучения, возвращает celery_task_id для аудита."""
+    """Отправляет задачу обучения, возвращает celery_task_id для аудита.
+
+    queue='gpu' задаём явно: task_routes из ml/workers/celery_app.py на server'е
+    не загружены (server только публикует), поэтому без явной очереди таска ушла
+    бы в дефолтную 'celery', которую GPU-worker (слушает 'gpu') не разбирает —
+    и обучение бы не стартовало.
+    """
     app = get_celery()
     result = app.send_task(
-        f"workers.train_{model_type}.train", args=[str(dataset_id)]
+        f"workers.train_{model_type}.train", args=[str(dataset_id)], queue="gpu"
     )
     return result.id
