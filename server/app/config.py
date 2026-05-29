@@ -56,11 +56,12 @@ class Settings(BaseSettings):
     selectel_project_name: str | None = None
     selectel_user_domain_name: str | None = None  # обычно = account_id
     selectel_region: str | None = None  # напр. ru-9
-    # Selectel GPU-серверы — boot-from-volume (flavor disk=0), Nova createImage
-    # для них запрещён политикой. Поэтому бутимся из СНАПШОТА ТОМА (Cinder) через
-    # block_device_mapping_v2: новый сервер = свежий volume из снапшота.
-    gpu_boot_snapshot_id: str | None = None  # снапшот boot-тома с готовым worker'ом
-    gpu_volume_size: int = 40  # размер boot-volume (GB), ≥ исходного
+    # Selectel GPU-серверы — boot-from-volume (flavor disk=0). Бутимся из
+    # durable Glance IMAGE (а не volume-снапшота: тот каскадно удаляется вместе
+    # с родительским томом). block_device_mapping_v2 source_type=image →
+    # свежий boot-volume из образа на каждый инстанс.
+    gpu_boot_image_id: str | None = None  # durable Glance image с готовым worker'ом
+    gpu_volume_size: int = 40  # размер boot-volume (GB), ≥ исходного образа
     gpu_availability_zone: str | None = None  # напр. ru-6a (где GPU-ёмкость)
     gpu_flavor_id: str | None = None  # GPU-flavor id (напр. 3100 = 1x RTX 4090)
     gpu_network_id: str | None = None

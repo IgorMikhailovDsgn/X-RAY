@@ -29,7 +29,7 @@ def _require_configured() -> None:
             "selectel_project_name": settings.selectel_project_name,
             "selectel_user_domain_name": settings.selectel_user_domain_name,
             "selectel_region": settings.selectel_region,
-            "gpu_boot_snapshot_id": settings.gpu_boot_snapshot_id,
+            "gpu_boot_image_id": settings.gpu_boot_image_id,
             "gpu_availability_zone": settings.gpu_availability_zone,
             "gpu_flavor_id": settings.gpu_flavor_id,
             "gpu_network_id": settings.gpu_network_id,
@@ -73,13 +73,14 @@ def create_gpu_server(name: str) -> str:
     """Создаёт GPU-сервер, бутящийся из снапшота тома. Возвращает server id.
     Не ждёт ACTIVE — поллинг статуса делает orchestrator в reconcile.
 
-    boot-from-volume: block_device_mapping_v2 с source_type=snapshot создаёт
-    свежий volume из gpu_boot_snapshot_id. delete_on_termination=True — том
-    удаляется вместе с инстансом (не копим осиротевшие диски = не платим за них).
+    boot-from-volume: block_device_mapping_v2 с source_type=image создаёт свежий
+    boot-volume из durable Glance образа gpu_boot_image_id. delete_on_termination
+    =True — том удаляется вместе с инстансом (не копим осиротевшие диски). Сам
+    образ независим и переживает удаление инстанса/тома.
     """
     conn = _connect()
     # key_name намеренно не передаём: SSH-доступ инъектится через authorized_keys
-    # в снапшоте, а Selectel-Nova не принимает account-scoped ключи как key_name.
+    # в образе, а Selectel-Nova не принимает account-scoped ключи как key_name.
     server = conn.compute.create_server(
         name=name,
         flavor_id=settings.gpu_flavor_id,
@@ -88,8 +89,8 @@ def create_gpu_server(name: str) -> str:
         block_device_mapping_v2=[
             {
                 "boot_index": 0,
-                "uuid": settings.gpu_boot_snapshot_id,
-                "source_type": "snapshot",
+                "uuid": settings.gpu_boot_image_id,
+                "source_type": "image",
                 "destination_type": "volume",
                 "volume_size": settings.gpu_volume_size,
                 "delete_on_termination": True,
