@@ -33,6 +33,9 @@ def _require_configured() -> None:
             "gpu_availability_zone": settings.gpu_availability_zone,
             "gpu_flavor_id": settings.gpu_flavor_id,
             "gpu_network_id": settings.gpu_network_id,
+            # gpu_keypair_name НЕ требуем: на Selectel SSH-ключи account-scoped,
+            # Nova create_server их не принимает ("Invalid key_name"). Доступ по
+            # SSH к инстансу обеспечивает authorized_keys, запечённый в снапшоте.
         }.items()
         if not value
     ]
@@ -75,10 +78,11 @@ def create_gpu_server(name: str) -> str:
     удаляется вместе с инстансом (не копим осиротевшие диски = не платим за них).
     """
     conn = _connect()
+    # key_name намеренно не передаём: SSH-доступ инъектится через authorized_keys
+    # в снапшоте, а Selectel-Nova не принимает account-scoped ключи как key_name.
     server = conn.compute.create_server(
         name=name,
         flavor_id=settings.gpu_flavor_id,
-        key_name=settings.gpu_keypair_name,
         availability_zone=settings.gpu_availability_zone,
         networks=[{"uuid": settings.gpu_network_id}],
         block_device_mapping_v2=[
