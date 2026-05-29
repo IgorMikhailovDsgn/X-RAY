@@ -206,6 +206,10 @@ def _train_yolo(
             name="run",
             exist_ok=True,
             verbose=False,
+            # Celery prefork запускает таску в daemon-процессе, а daemon не может
+            # иметь детей → DataLoader с workers>0 падает с AssertionError.
+            # workers=0 = загрузка данных в самом процессе (без подпроцессов).
+            workers=0,
         )
         val = model.val()
         metrics = {
