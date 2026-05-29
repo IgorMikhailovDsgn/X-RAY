@@ -26,22 +26,22 @@ class GateThresholds(TypedDict):
 # единственный разметчик, сделает ~100 скринов; цель — прогнать весь пайплайн
 # (build → manifest → GPU → train → model), а не качество выборки. Перед реальным
 # обучением вернуть к боевым значениям (localize 500/150/50/2/70, tumor 300/120/30/2/70).
-# min_negative=0: без задеплоенной модели Annotate-флоу даёт только
-# action='created' (bbox обязателен → positive). Negatives (bbox=NULL) требуют
-# action='confirmed' с detection_id, а детекций нет, пока нет prod-модели. Так
-# что для первого e2e-датасета все аннотации positive — не блокируем.
+# Пороги снижены под solo-annotator e2e-тест (2026-05-29). Негативы (bbox=NULL)
+# создаются через "Mark Null" в Annotate-флоу (action='created' + bbox=NULL,
+# разрешён с миграции 0006). Перед боевым обучением вернуть к реальным значениям
+# (localize 500/150/50/2/70, tumor 300/120/30/2/70).
 GATE_THRESHOLDS: dict[str, GateThresholds] = {
     "localize": {
         "min_total": 50,
         "min_positive": 15,
-        "min_negative": 0,
+        "min_negative": 5,
         "min_annotators": 1,
         "max_annotator_pct": 100.0,
     },
     "tumor": {
         "min_total": 50,
         "min_positive": 15,
-        "min_negative": 0,
+        "min_negative": 5,
         "min_annotators": 1,
         "max_annotator_pct": 100.0,
     },

@@ -108,6 +108,39 @@ async def test_check_counts_free_annotations(
     assert stats["by_device"][0]["device_id"] == "mac-1"
 
 
+async def test_check_counts_created_null_as_negative(
+    client: AsyncClient, admin_headers, sessionmaker
+):
+    """Negative = created + bbox=NULL (Mark Null). Регрессия: bbox=None должен
+    лечь в БД как SQL NULL (none_as_null), иначе `bbox IS NULL` его не видит и
+    негатив ошибочно считается positive."""
+    screen_id = await _seed_screenshot(sessionmaker, "mac-1")
+    await _seed_annotation(
+        sessionmaker, screen_id=screen_id, bbox={"x": 0, "y": 0, "w": 1, "h": 1}
+    )
+    # Негатив: created + bbox=None (direct ORM insert).
+    async with sessionmaker() as session:
+        session.add(
+            LocalizeAnnotation(
+                screen_id=screen_id,
+                monitor_index=0,
+                bbox=None,
+                action="created",
+                annotator_id="a",
+            )
+        )
+        await session.commit()
+
+    resp = await client.get(
+        "/api/v1/admin/datasets/check?model_type=localize", headers=admin_headers
+    )
+    assert resp.status_code == 200
+    stats = resp.json()["stats"]
+    assert stats["total_free"] == 2
+    assert stats["positive"] == 1
+    assert stats["negative"] == 1
+
+
 async def test_check_ready_to_build_false_when_suspended(
     client: AsyncClient, admin_headers, sessionmaker
 ):

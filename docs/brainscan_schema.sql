@@ -140,7 +140,8 @@ CREATE TABLE localize_annotations (
     action          TEXT NOT NULL,
     -- 'confirmed' — соглашаемся с моделью (bbox может быть NULL)
     -- 'corrected' — модель сказала одно, человек дал другое (bbox обязателен)
-    -- 'created'   — ручная разметка с нуля (detection_id NULL, bbox обязателен)
+    -- 'created'   — ручная разметка с нуля (detection_id NULL);
+    --              bbox NULL = область отсутствует (Mark Null, negative-пример)
     annotator_id    TEXT NOT NULL,
     annotated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     meta_json_path  TEXT,
@@ -154,8 +155,7 @@ CREATE TABLE localize_annotations (
             (action = 'corrected' AND detection_id IS NOT NULL
                                   AND bbox IS NOT NULL)
             OR
-            (action = 'created'   AND detection_id IS NULL
-                                  AND bbox IS NOT NULL)
+            (action = 'created'   AND detection_id IS NULL)
         )
 );
 
@@ -242,15 +242,15 @@ CREATE TABLE tumor_annotations (
             OR
             (action = 'corrected' AND detection_id IS NOT NULL)
             OR
-            (action = 'created'   AND detection_id IS NULL
-                                  AND bbox IS NOT NULL)
+            (action = 'created'   AND detection_id IS NULL)
         )
     -- 'confirmed': подтверждаем результат модели как есть
     --              (bbox=null если модель сказала "нет опухоли")
     -- 'corrected': исправляем результат модели
     --              (bbox может быть NULL если человек сказал
     --               "модель нашла опухоль, но её нет")
-    -- 'created':   ручная разметка без работы модели
+    -- 'created':   ручная разметка без работы модели;
+    --              bbox NULL = опухоли нет (Mark Null, negative-пример)
 );
 
 CREATE INDEX idx_tumor_annotations_image

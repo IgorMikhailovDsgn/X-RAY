@@ -59,14 +59,19 @@ async def test_created_ok(client, auth_headers):
     assert resp.json()["bbox"] == BBOX
 
 
-async def test_created_without_bbox_rejected(client, auth_headers):
+async def test_created_without_bbox_ok_negative(client, auth_headers):
+    # bbox=NULL + created = negative ("опухоли нет", Mark Null). Разрешён с 0006.
     image_id = await _make_localize_image(client, auth_headers)
     resp = await client.post(
         "/api/v1/tumor-annotations",
         headers=auth_headers,
         json={"localize_image_id": image_id, "action": "created"},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["action"] == "created"
+    assert body["bbox"] is None
+    assert body["detection_id"] is None
 
 
 async def test_confirmed_without_detection_rejected(client, auth_headers):

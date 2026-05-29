@@ -20,8 +20,8 @@ typealias PreparedSnapshots = [Int: PreparedSnapshot]
 /// - `upload(payload:snapshots:)` — отправка screenshots → annotations → localize-images
 ///   → tumor-annotations. Используется и UI Send, и replay из sync-очереди.
 ///
-/// Null-сущности при cold-start (action='created' + bbox=NULL) пока пропускаются —
-/// DB CHECK не пускает, см. комментарии в коде. Уточним отдельным экшеном позже.
+/// Negative-разметка («Mark Null»: области/опухоли нет) уходит как
+/// action='created' + bbox=null (разрешено с backend-миграции 0006).
 enum AnnotationSubmitter {
     static func prepare(geometry: [Int: DisplaySnapshot]) async throws -> PreparedSnapshots {
         let fresh = try await ScreenCapturer.captureForSubmit(geometry: geometry)
@@ -49,7 +49,20 @@ enum AnnotationSubmitter {
         let pngs = snapshots.mapValues(\.png)
         let screen = try await api.uploadScreenshots(images: pngs)
 
-        // 2. Region: annotation → crop → localize-image.
+        // 2a. Region=null («области нет нигде») → negative localize-аннотация на
+        // КАЖДЫЙ захваченный монитор (каждый full-screenshot — валидный negative).
+        // Crop/localize-image и tumor не создаём (нет области → нет crop'а).
+        if payload.regionNull {
+            for monitorIndex in snapshots.keys.sorted() {
+                _ = try await api.createLocalizeAnnotation(
+                    .init(screenId: screen.id, detectionId: nil,
+                          monitorIndex: monitorIndex, bbox: nil, action: "created")
+                )
+            }
+            return
+        }
+
+        // 2b. Region: annotation → crop → localize-image.
         var firstLocalizeImageId: UUID?
         for region in payload.regions {
             guard let snap = snapshots[region.monitorIndex] else { continue }
@@ -70,18 +83,26 @@ enum AnnotationSubmitter {
         }
 
         // 3. Tumor → tumor-annotations (привязка к localize-image первого региона).
-        if let lid = firstLocalizeImageId, let firstRegion = payload.regions.first,
-           let snap = snapshots[firstRegion.monitorIndex] {
-            for tumor in payload.tumors {
-                let inCrop = CoordinateConverter.tumorInCrop(
-                    tumorLogical: tumor.rect.cgRect,
-                    regionLogical: firstRegion.rect.cgRect,
-                    dpi: snap.scaleFactor
-                )
+        if let lid = firstLocalizeImageId {
+            if payload.tumorNull {
+                // Опухоли нет на crop'е → negative tumor-аннотация (bbox=null).
                 _ = try await api.createTumorAnnotation(
                     .init(localizeImageId: lid, detectionId: nil,
-                          bbox: BboxDTO(physical: inCrop), action: "created")
+                          bbox: nil, action: "created")
                 )
+            } else if let firstRegion = payload.regions.first,
+                      let snap = snapshots[firstRegion.monitorIndex] {
+                for tumor in payload.tumors {
+                    let inCrop = CoordinateConverter.tumorInCrop(
+                        tumorLogical: tumor.rect.cgRect,
+                        regionLogical: firstRegion.rect.cgRect,
+                        dpi: snap.scaleFactor
+                    )
+                    _ = try await api.createTumorAnnotation(
+                        .init(localizeImageId: lid, detectionId: nil,
+                              bbox: BboxDTO(physical: inCrop), action: "created")
+                    )
+                }
             }
         }
     }

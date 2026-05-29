@@ -24,7 +24,11 @@ class LocalizeDetection(Base):
         UUID(as_uuid=True), ForeignKey("models.id"), nullable=False
     )
     monitor_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    bbox: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # none_as_null: Python None → SQL NULL (а не JSONB-скаляр 'null'). Без этого
+    # `bbox IS NULL` в gate/stats не видит негативы → они считаются positive.
+    bbox: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     meta_json_path: Mapped[str | None] = mapped_column(String, nullable=True)
     inferred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -46,7 +50,11 @@ class LocalizeAnnotation(Base):
         UUID(as_uuid=True), ForeignKey("localize_detections.id"), nullable=True
     )
     monitor_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    bbox: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # none_as_null: Python None → SQL NULL (а не JSONB-скаляр 'null'). Без этого
+    # `bbox IS NULL` в gate/stats не видит негативы → они считаются positive.
+    bbox: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     action: Mapped[str] = mapped_column(String, nullable=False)
     annotator_id: Mapped[str] = mapped_column(String, nullable=False)
     annotated_at: Mapped[datetime] = mapped_column(

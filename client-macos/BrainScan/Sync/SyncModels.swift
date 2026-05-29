@@ -29,17 +29,35 @@ struct BboxPayload: Codable, Equatable {
     }
 }
 
-/// Полезная нагрузка одной отправки разметки. Сейчас хранятся только
-/// конкретные bbox (null-сущности пропускаются на бэке — см. submitter).
+/// Полезная нагрузка одной отправки разметки. `regions`/`tumors` — нарисованные
+/// bbox (positive); `regionNull`/`tumorNull` — флаги «Mark Null» (negative:
+/// области/опухоли нет). На бэк negative уходит как action='created' + bbox=null.
 struct UploadPayload: Codable, Equatable {
     let regions: [BboxPayload]
     let tumors: [BboxPayload]
+    let regionNull: Bool
+    let tumorNull: Bool
 
     static func from(model: AnnotationModel) -> UploadPayload {
         UploadPayload(
             regions: model.regionState.bboxes.map(BboxPayload.init(from:)),
-            tumors: model.tumorState.bboxes.map(BboxPayload.init(from:))
+            tumors: model.tumorState.bboxes.map(BboxPayload.init(from:)),
+            regionNull: model.regionState.isNull,
+            tumorNull: model.tumorState.isNull
         )
+    }
+}
+
+extension UploadPayload {
+    /// Backward-compat: старые манифесты в sync-очереди без regionNull/tumorNull
+    /// декодятся как false (поведение как раньше — нули не слались). init(from:)
+    /// в extension сохраняет синтезированный memberwise-init.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        regions = try c.decode([BboxPayload].self, forKey: .regions)
+        tumors = try c.decode([BboxPayload].self, forKey: .tumors)
+        regionNull = try c.decodeIfPresent(Bool.self, forKey: .regionNull) ?? false
+        tumorNull = try c.decodeIfPresent(Bool.self, forKey: .tumorNull) ?? false
     }
 }
 

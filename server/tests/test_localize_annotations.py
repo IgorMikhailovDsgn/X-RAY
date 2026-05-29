@@ -3,7 +3,8 @@
 Действия:
 - 'confirmed': detection_id REQUIRED, bbox любой
 - 'corrected': detection_id REQUIRED, bbox REQUIRED
-- 'created':   detection_id MUST be NULL, bbox REQUIRED
+- 'created':   detection_id MUST be NULL, bbox опционален
+               (bbox=NULL = "области нет", negative-пример / Mark Null)
 """
 
 import json
@@ -45,14 +46,20 @@ async def test_created_ok_with_bbox(client, auth_headers):
     assert body["annotator_id"]
 
 
-async def test_created_without_bbox_rejected(client, auth_headers):
+async def test_created_without_bbox_ok_negative(client, auth_headers):
+    # bbox=NULL + created = negative-пример ("области нет", Mark Null). С миграции
+    # 0006 разрешён — DB CHECK и Pydantic больше не требуют bbox у created.
     screen_id = await _make_screenshot(client, auth_headers)
     resp = await client.post(
         "/api/v1/localize-annotations",
         headers=auth_headers,
         json={"screen_id": screen_id, "monitor_index": 0, "action": "created"},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["action"] == "created"
+    assert body["bbox"] is None
+    assert body["detection_id"] is None
 
 
 async def test_created_with_detection_id_rejected(client, auth_headers):

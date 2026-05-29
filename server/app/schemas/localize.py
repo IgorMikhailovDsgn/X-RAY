@@ -51,10 +51,9 @@ class LocalizeAnnotationCreate(BaseModel):
             if self.detection_id is None or self.bbox is None:
                 raise ValueError("action='corrected' requires detection_id and bbox")
         elif self.action == "created":
-            if self.detection_id is not None or self.bbox is None:
-                raise ValueError(
-                    "action='created' requires detection_id=null and bbox"
-                )
+            # bbox может быть None: NULL = "области нет" (negative, Mark Null).
+            if self.detection_id is not None:
+                raise ValueError("action='created' requires detection_id=null")
         return self
 
 
