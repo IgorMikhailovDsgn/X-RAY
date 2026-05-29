@@ -92,6 +92,10 @@ services:
   redis:
     image: redis:7-alpine
     container_name: brainscan_redis
+    # Публикуем ТОЛЬКО на host-localhost (не 0.0.0.0) — GPU-worker на отдельном
+    # инстансе достучится через SSH-туннель (Phase 7), наружу порт закрыт.
+    ports:
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

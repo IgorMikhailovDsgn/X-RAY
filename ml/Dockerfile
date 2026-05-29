@@ -32,6 +32,8 @@ COPY --from=builder /app /app
 RUN chown -R app:app /app
 USER app
 
-# Worker + beat scheduler в одном контейнере (MVP, низкая нагрузка). В проде
-# разнесём на отдельные deployment'ы, когда появятся реальные long-running таски.
-CMD ["celery", "-A", "workers.celery_app", "worker", "-B", "--loglevel=info"]
+# CPU-worker: слушает ТОЛЬКО очередь `default` (retrain_trigger, maintenance).
+# Тяжёлые train-таски маршрутизируются в `gpu` (см. celery_app.task_routes) и
+# исполняются отдельным GPU-worker'ом (Dockerfile.gpu). `-B` = beat scheduler,
+# живёт здесь (один на весь кластер).
+CMD ["celery", "-A", "workers.celery_app", "worker", "-B", "-Q", "default", "--loglevel=info"]

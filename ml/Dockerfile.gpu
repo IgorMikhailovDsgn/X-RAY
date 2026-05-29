@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1.7
+# BrainScan GPU-worker — Celery worker для очереди `gpu` (train_localize/tumor).
+# Base python:3.12-slim: современные torch-wheels везут CUDA-userspace внутри,
+# а GPU-driver инжектится nvidia-container-runtime (default runtime на хосте).
+# Поэтому отдельный nvidia/cuda base-image не нужен — хватает slim + pip torch.
+#
+# Тяжёлые ML-зависимости (torch/ultralytics/opencv) ставятся pip'ом ПОВЕРХ
+# uv-venv, а не через uv lock: CUDA-wheels linux-only, тащить их в
+# кросс-платформенный ml/uv.lock не хочется. Base-deps (celery/boto3/...) —
+# по-прежнему через frozen uv sync.
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
+
+# libgl1/libglib — рантайм-зависимости opencv (даже headless тянет libGL).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv==0.5.13
+
+WORKDIR /app
+COPY ml/pyproject.toml ml/uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY ml/ ./
+RUN uv sync --frozen --no-dev
+
+# GPU-only стек. torch без явного index-url — PyPI-wheel уже CUDA-enabled.
+# Версии нестрого пинованы; Phase 8 зафиксирует конкретные при первом обучении.
+RUN /app/.venv/bin/pip install --no-cache-dir \
+        "torch>=2.5" \
+        "ultralytics>=8.3" \
+        "opencv-python-headless>=4.10" \
+        "pillow>=10.4"
+
+RUN useradd --create-home --shell /bin/bash --uid 1000 app
+RUN chown -R app:app /app
+USER app
+
+# GPU-worker слушает ТОЛЬКО очередь `gpu`. Без `-B`: beat-scheduler живёт на
+# CPU-worker'е (dev VPS), один на кластер.
+CMD ["celery", "-A", "workers.celery_app", "worker", "-Q", "gpu", "--loglevel=info"]

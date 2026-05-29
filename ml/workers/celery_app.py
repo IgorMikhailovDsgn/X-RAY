@@ -30,7 +30,19 @@ app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
+    task_default_queue="default",
 )
+
+# Queue split (Phase 7): тяжёлые train-таски уходят в очередь `gpu`, которую
+# слушает только GPU-worker на отдельном инстансе. Всё остальное (retrain_trigger,
+# maintenance) — в `default` на dev-worker'е. Если GPU-инстанс выключен, train-
+# задачи копятся в Redis и подберутся при следующем запуске GPU-worker'а.
+app.conf.task_routes = {
+    "workers.train_localize.*": {"queue": "gpu"},
+    "workers.train_tumor.*": {"queue": "gpu"},
+    "workers.retrain_trigger.*": {"queue": "default"},
+    "workers.maintenance.*": {"queue": "default"},
+}
 
 # Beat-расписание: раз в сутки проверяем накопление аннотаций и решаем,
 # запускать ли дообучение. В MVP реальный train отключён feature-флагом

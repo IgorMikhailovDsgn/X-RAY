@@ -1,0 +1,31 @@
+# BrainScan GPU-worker compose — для отдельного GPU-инстанса (Selectel, почасовой).
+# Запускает ТОЛЬКО worker-gpu. Postgres/S3/MLflow — внешние managed/dev-сервисы
+# (публичные endpoint'ы). Redis (брокер) — на dev VPS, доступен через SSH-туннель
+# на host localhost:6379, поэтому контейнер в network_mode: host.
+#
+# Запуск:
+#   docker compose -f docker-compose.gpu.yml --env-file .env.gpu up -d
+#
+# .env.gpu (живёт только на GPU-боксе, не в репо): REDIS_URL через туннель,
+# те же DATABASE_URL/S3/MLFLOW что у dev, плюс MLFLOW basic-auth creds.
+
+services:
+  worker-gpu:
+    image: ghcr.io/igormikhailovdsgn/brainscan-worker-gpu:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: ml/Dockerfile.gpu
+    container_name: brainscan_worker_gpu
+    env_file: .env.gpu
+    # host-сеть: видим SSH-туннель к dev Redis на 127.0.0.1:6379.
+    network_mode: host
+    # GPU passthrough. На Selectel default docker runtime = nvidia, но указываем
+    # явно для портируемости на другие провайдеры.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
