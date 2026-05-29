@@ -211,7 +211,7 @@ def _train_yolo(
             # workers=0 = загрузка данных в самом процессе (без подпроцессов).
             workers=0,
         )
-        val = model.val()
+        val = model.val(workers=0)  # workers=0: тот же daemon-форк, что и в train
         metrics = {
             "map50": float(val.box.map50),
             "map50_95": float(val.box.map),
