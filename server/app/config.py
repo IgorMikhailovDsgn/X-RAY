@@ -56,8 +56,13 @@ class Settings(BaseSettings):
     selectel_project_name: str | None = None
     selectel_user_domain_name: str | None = None  # обычно = account_id
     selectel_region: str | None = None  # напр. ru-9
-    gpu_image_id: str | None = None  # snapshot с готовым worker'ом
-    gpu_flavor_id: str | None = None  # GPU-flavor (single RTX 4090)
+    # Selectel GPU-серверы — boot-from-volume (flavor disk=0), Nova createImage
+    # для них запрещён политикой. Поэтому бутимся из СНАПШОТА ТОМА (Cinder) через
+    # block_device_mapping_v2: новый сервер = свежий volume из снапшота.
+    gpu_boot_snapshot_id: str | None = None  # снапшот boot-тома с готовым worker'ом
+    gpu_volume_size: int = 40  # размер boot-volume (GB), ≥ исходного
+    gpu_availability_zone: str | None = None  # напр. ru-6a (где GPU-ёмкость)
+    gpu_flavor_id: str | None = None  # GPU-flavor id (напр. 3100 = 1x RTX 4090)
     gpu_network_id: str | None = None
     gpu_keypair_name: str | None = None
     # Сколько минут без спроса держать инстанс перед удалением.

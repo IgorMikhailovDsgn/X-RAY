@@ -29,7 +29,8 @@ def _require_configured() -> None:
             "selectel_project_name": settings.selectel_project_name,
             "selectel_user_domain_name": settings.selectel_user_domain_name,
             "selectel_region": settings.selectel_region,
-            "gpu_image_id": settings.gpu_image_id,
+            "gpu_boot_snapshot_id": settings.gpu_boot_snapshot_id,
+            "gpu_availability_zone": settings.gpu_availability_zone,
             "gpu_flavor_id": settings.gpu_flavor_id,
             "gpu_network_id": settings.gpu_network_id,
         }.items()
@@ -66,15 +67,30 @@ def _connect() -> Any:
 
 
 def create_gpu_server(name: str) -> str:
-    """Создаёт GPU-сервер из snapshot-образа. Возвращает openstack server id.
-    Не ждёт ACTIVE — поллинг статуса делает orchestrator в reconcile."""
+    """Создаёт GPU-сервер, бутящийся из снапшота тома. Возвращает server id.
+    Не ждёт ACTIVE — поллинг статуса делает orchestrator в reconcile.
+
+    boot-from-volume: block_device_mapping_v2 с source_type=snapshot создаёт
+    свежий volume из gpu_boot_snapshot_id. delete_on_termination=True — том
+    удаляется вместе с инстансом (не копим осиротевшие диски = не платим за них).
+    """
     conn = _connect()
     server = conn.compute.create_server(
         name=name,
-        image_id=settings.gpu_image_id,
         flavor_id=settings.gpu_flavor_id,
         key_name=settings.gpu_keypair_name,
+        availability_zone=settings.gpu_availability_zone,
         networks=[{"uuid": settings.gpu_network_id}],
+        block_device_mapping_v2=[
+            {
+                "boot_index": 0,
+                "uuid": settings.gpu_boot_snapshot_id,
+                "source_type": "snapshot",
+                "destination_type": "volume",
+                "volume_size": settings.gpu_volume_size,
+                "delete_on_termination": True,
+            }
+        ],
     )
     return server.id
 
