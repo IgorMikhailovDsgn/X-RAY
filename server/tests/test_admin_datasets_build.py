@@ -164,7 +164,7 @@ async def test_build_manual_creates_pending_candidate(
     assert body["status"] == "pending_approval"
     assert body["candidate_id"] is not None
     assert body["build_id"] is not None
-    # Gate провален (1 < min_total=500), но candidate всё равно создан с
+    # Gate провален (1 < min_total), но candidate всё равно создан с
     # gate_passed=False — это и есть смысл manual режима.
     assert body["gate_passed"] is False
     assert body["gate_issues"]

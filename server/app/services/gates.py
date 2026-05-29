@@ -22,20 +22,24 @@ class GateThresholds(TypedDict):
     max_annotator_pct: float
 
 
+# Пороги временно снижены под solo-annotator e2e-тест (2026-05-29): Igor —
+# единственный разметчик, сделает ~100 скринов; цель — прогнать весь пайплайн
+# (build → manifest → GPU → train → model), а не качество выборки. Перед реальным
+# обучением вернуть к боевым значениям (localize 500/150/50/2/70, tumor 300/120/30/2/70).
 GATE_THRESHOLDS: dict[str, GateThresholds] = {
     "localize": {
-        "min_total": 500,
-        "min_positive": 150,
-        "min_negative": 50,
-        "min_annotators": 2,
-        "max_annotator_pct": 70.0,
+        "min_total": 50,
+        "min_positive": 15,
+        "min_negative": 5,
+        "min_annotators": 1,
+        "max_annotator_pct": 100.0,
     },
     "tumor": {
-        "min_total": 300,
-        "min_positive": 120,
-        "min_negative": 30,
-        "min_annotators": 2,
-        "max_annotator_pct": 70.0,
+        "min_total": 50,
+        "min_positive": 15,
+        "min_negative": 5,
+        "min_annotators": 1,
+        "max_annotator_pct": 100.0,
     },
 }
 

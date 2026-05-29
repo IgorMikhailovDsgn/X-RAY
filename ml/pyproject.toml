@@ -16,8 +16,9 @@ dependencies = [
     # Cron-таски воркера дёргают /api/v1/internal/* на server'е (через docker
     # network), а не лезут в БД сами — переиспользуем server-side pipeline.
     "httpx>=0.27",
-    # Реальные ML-зависимости появятся когда подключим первую модель:
-    # "torch", "torchvision", "ultralytics" (YOLOv8), "opencv-python", "pillow"
+    # GPU-only ML-стек (torch/ultralytics/opencv-headless/pillow) НЕ здесь:
+    # CUDA-wheels linux-only, ставятся через `uv pip install` в ml/Dockerfile.gpu
+    # поверх этого frozen-lock'а (см. Phase 8). На CPU-worker'е их нет.
 ]
 
 [dependency-groups]

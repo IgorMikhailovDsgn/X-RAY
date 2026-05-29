@@ -61,3 +61,46 @@ def gpu_reconcile() -> dict[str, Any]:
         r = c.post("/api/v1/internal/gpu/reconcile")
         r.raise_for_status()
         return r.json()
+
+
+# --------------------------- training lifecycle (Phase 8) ---------------------------
+
+
+def training_start(dataset_id: str) -> dict[str, Any]:
+    """ready → training; возвращает manifest_path/model_type/version."""
+    with _client() as c:
+        r = c.post(f"/api/v1/internal/training/{dataset_id}/start")
+        r.raise_for_status()
+        return r.json()
+
+
+def training_complete(
+    dataset_id: str,
+    *,
+    artifact_path: str,
+    metrics: dict[str, Any],
+    mlflow_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Регистрирует обученную модель (candidate) + dataset → completed."""
+    with _client() as c:
+        r = c.post(
+            f"/api/v1/internal/training/{dataset_id}/complete",
+            json={
+                "artifact_path": artifact_path,
+                "metrics": metrics,
+                "mlflow_run_id": mlflow_run_id,
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+def training_fail(dataset_id: str, reason: str) -> dict[str, Any]:
+    """Откат: dataset → failed, аннотации обратно в свободный пул."""
+    with _client() as c:
+        r = c.post(
+            f"/api/v1/internal/training/{dataset_id}/fail",
+            json={"reason": reason},
+        )
+        r.raise_for_status()
+        return r.json()
