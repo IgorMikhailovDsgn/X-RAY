@@ -87,3 +87,6 @@ logs/
 
 # --- Docker volumes (local dev) ---
 .docker-data/
+
+# --- Agent/IDE local artifacts ---
+.claude/
