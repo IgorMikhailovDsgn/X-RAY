@@ -1,0 +1,57 @@
+name: gpu-deploy
+
+# Ручной деплой GPU-worker'а на отдельный GPU-инстанс (Selectel, почасовой).
+# workflow_dispatch only: GPU-бокс обычно выключен/эфемерный, авто-триггер на
+# push бессмыслен. Перед запуском убедись, что инстанс поднят и в GH secrets
+# актуальный GPU_VPS_HOST (IP меняется при пересоздании).
+#
+# Образ brainscan-worker-gpu тяжёлый (~8GB c torch+cudnn). Сборку делаем на
+# самом GPU-боксе (там быстрый интернет и nvidia-runtime для smoke-проверки),
+# а не в GH Actions + GHCR — это экономит и время CI, и трафик pull'а.
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref для сборки на GPU-боксе (default: main)"
+        required: false
+        default: "main"
+
+concurrency:
+  group: gpu-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & restart GPU worker
+    runs-on: ubuntu-latest
+    environment:
+      name: gpu
+    steps:
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.GPU_VPS_HOST }}
+          username: ${{ secrets.GPU_VPS_USER }}
+          key: ${{ secrets.GPU_VPS_SSH_KEY }}
+          port: ${{ secrets.GPU_VPS_PORT || 22 }}
+          command_timeout: 30m  # сборка torch-образа долгая
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /home/brainscan/brainscan
+            git fetch --quiet origin
+            git checkout --quiet "${{ inputs.git_ref }}"
+            git pull --quiet origin "${{ inputs.git_ref }}"
+            cd deploy
+            # .env.gpu живёт только на боксе (секреты), не в репо.
+            docker compose -f docker-compose.gpu.yml --env-file .env.gpu build worker-gpu
+            docker compose -f docker-compose.gpu.yml --env-file .env.gpu up -d worker-gpu
+            sleep 8
+            # Smoke: worker отвечает и подписан на gpu-очередь.
+            docker compose -f docker-compose.gpu.yml --env-file .env.gpu exec -T worker-gpu \
+              celery -A workers.celery_app inspect active_queues 2>&1 | grep -q gpu \
+              && echo "GPU worker is up and consuming 'gpu' queue" \
+              || (echo "GPU worker not consuming gpu queue"; \
+                  docker compose -f docker-compose.gpu.yml --env-file .env.gpu logs --tail=40 worker-gpu; \
+                  exit 1)
