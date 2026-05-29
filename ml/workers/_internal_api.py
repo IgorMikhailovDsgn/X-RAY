@@ -54,3 +54,10 @@ def cleanup_hung_builds() -> dict[str, Any]:
         r = c.post("/api/v1/internal/maintenance/cleanup-hung-builds")
         r.raise_for_status()
         return r.json()
+
+
+def gpu_reconcile() -> dict[str, Any]:
+    with _client() as c:
+        r = c.post("/api/v1/internal/gpu/reconcile")
+        r.raise_for_status()
+        return r.json()

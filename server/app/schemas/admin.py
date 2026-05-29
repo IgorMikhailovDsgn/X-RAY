@@ -127,3 +127,38 @@ class CandidateList(BaseModel):
 
 class CandidateSkipRequest(BaseModel):
     reason: str
+
+
+# --- Phase 7b: GPU auto-orchestration ---
+
+
+class GpuInstanceInfo(BaseModel):
+    id: uuid.UUID
+    status: str
+    openstack_server_id: str | None
+    flavor: str | None
+    created_at: datetime
+    ready_at: datetime | None
+    last_activity_at: datetime
+    error: str | None
+
+
+class GpuStatusResponse(BaseModel):
+    autoscale_enabled: bool
+    provider_configured: bool
+    demand: int  # datasets в ready|training
+    idle_teardown_minutes: int
+    instance: GpuInstanceInfo | None
+
+
+class GpuAutoscaleUpdate(BaseModel):
+    enabled: bool
+
+
+class GpuActionResponse(BaseModel):
+    # Свободная форма исхода reconcile/force (action + детали).
+    action: str
+    instance_id: uuid.UUID | None = None
+    server_id: str | None = None
+    status: str | None = None
+    detail: dict[str, Any] | None = None

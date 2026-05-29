@@ -113,6 +113,24 @@ async def test_cleanup_rejects_missing_token(client: AsyncClient):
     assert resp.status_code == 401
 
 
+# ----- /gpu/reconcile -----
+
+
+async def test_gpu_reconcile_rejects_missing_token(client: AsyncClient):
+    resp = await client.post("/api/v1/internal/gpu/reconcile")
+    assert resp.status_code == 401
+
+
+async def test_gpu_reconcile_disabled_by_default(client: AsyncClient):
+    # autoscale выключен (нет seed-строки после truncate → get_bool_setting=False).
+    resp = await client.post(
+        "/api/v1/internal/gpu/reconcile",
+        headers={"X-Internal-Token": TOKEN},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["action"] == "disabled"
+
+
 async def test_cleanup_noop_when_no_hung_builds(
     client: AsyncClient, sessionmaker
 ):

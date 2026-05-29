@@ -128,7 +128,9 @@ class SystemSetting(Base):
     __tablename__ = "system_settings"
 
     key: Mapped[str] = mapped_column(Text, primary_key=True)
-    value: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # JSONB держит разнородные значения: dict (training_mode) или bool
+    # (gpu_autoscale_enabled) — поэтому Any, а не dict.
+    value: Mapped[Any] = mapped_column(JSONB, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

@@ -20,6 +20,7 @@ app = Celery(
         "workers.train_tumor",
         "workers.retrain_trigger",
         "workers.maintenance",
+        "workers.gpu_autoscaler",
     ],
 )
 
@@ -42,6 +43,7 @@ app.conf.task_routes = {
     "workers.train_tumor.*": {"queue": "gpu"},
     "workers.retrain_trigger.*": {"queue": "default"},
     "workers.maintenance.*": {"queue": "default"},
+    "workers.gpu_autoscaler.*": {"queue": "default"},
 }
 
 # Beat-расписание: раз в сутки проверяем накопление аннотаций и решаем,
@@ -64,5 +66,11 @@ app.conf.beat_schedule = {
     "cleanup-hung-builds": {
         "task": "workers.maintenance.cleanup_hung_builds",
         "schedule": crontab(minute=17),  # раз в час в :17 (избегаем top-of-hour)
+    },
+    # GPU автоскейл (Phase 7b): каждые 2 мин проверяем спрос и поднимаем/гасим
+    # GPU-инстанс. No-op если gpu_autoscale_enabled=false (default).
+    "gpu-autoscaler": {
+        "task": "workers.gpu_autoscaler.reconcile",
+        "schedule": crontab(minute="*/2"),
     },
 }

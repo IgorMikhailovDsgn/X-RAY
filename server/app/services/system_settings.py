@@ -19,6 +19,8 @@ TrainingMode = Literal["auto", "manual", "suspended"]
 TRAINING_MODE_KEY = "training_mode"
 _DEFAULT_MODE: dict[str, TrainingMode] = {"localize": "manual", "tumor": "manual"}
 
+GPU_AUTOSCALE_KEY = "gpu_autoscale_enabled"
+
 
 async def _get_raw(session: AsyncSession, key: str) -> dict[str, Any] | None:
     row = (
@@ -74,3 +76,28 @@ async def update_training_mode(
         existing.updated_by = updated_by
     await session.flush()
     return merged
+
+
+async def get_bool_setting(
+    session: AsyncSession, key: str, default: bool = False
+) -> bool:
+    """Читает JSONB-bool setting (напр. gpu_autoscale_enabled). default если
+    строки нет или значение не bool."""
+    raw = await _get_raw(session, key)
+    return raw if isinstance(raw, bool) else default
+
+
+async def set_bool_setting(
+    session: AsyncSession, key: str, value: bool, *, updated_by: uuid.UUID | None = None
+) -> bool:
+    existing = (
+        await session.execute(select(SystemSetting).where(SystemSetting.key == key))
+    ).scalar_one_or_none()
+    if existing is None:
+        session.add(SystemSetting(key=key, value=value, updated_by=updated_by))
+    else:
+        existing.value = value
+        existing.updated_at = func.now()
+        existing.updated_by = updated_by
+    await session.flush()
+    return value

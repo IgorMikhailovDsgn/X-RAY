@@ -7,11 +7,14 @@ server'а: server и worker сидят в разных Docker-image'ах и не
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter
 
 from app.api.v1.deps import InternalAuth, SessionDep, StorageDep
 from app.schemas.admin import BuildRequest, BuildResponse
 from app.services.dataset_pipeline import run_build
+from app.services.gpu_orchestrator import reconcile as gpu_reconcile
 from app.services.maintenance import CleanupResult, cleanup_hung_builds
 
 router = APIRouter()
@@ -47,3 +50,14 @@ async def cron_cleanup_hung_builds(
     аннотации обратно в свободный пул.
     """
     return await cleanup_hung_builds(session)
+
+
+@router.post("/gpu/reconcile")
+async def cron_gpu_reconcile(
+    session: SessionDep,
+    _: InternalAuth,
+) -> dict[str, Any]:
+    """Вызывается gpu-autoscaler beat-таской (~каждые 2 мин). Поднимает/держит/
+    гасит GPU-инстанс по спросу (datasets в ready|training). No-op если
+    gpu_autoscale_enabled=false."""
+    return await gpu_reconcile(session)

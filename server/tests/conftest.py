@@ -82,6 +82,9 @@ def sessionmaker(engine):
 
 
 _TABLES_TO_TRUNCATE = [
+    # Phase 7b:
+    "gpu_instances",
+    "system_settings",
     # Phase 5a additions:
     "training_candidates",
     "dataset_builds",

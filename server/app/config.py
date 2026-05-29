@@ -47,6 +47,22 @@ class Settings(BaseSettings):
     # валидным JWT. None = endpoint'ы недоступны (default локально).
     internal_api_token: str | None = None
 
+    # --- Phase 7b: GPU auto-orchestration (Selectel OpenStack) ---
+    # Креды service-user'а + параметры инстанса. Если ключевые (auth/image/
+    # flavor/network) не заданы — orchestrator no-op'ит (провижить нечем).
+    selectel_auth_url: str = "https://cloud.api.selcloud.ru/identity/v3"
+    selectel_username: str | None = None
+    selectel_password: str | None = None
+    selectel_project_name: str | None = None
+    selectel_user_domain_name: str | None = None  # обычно = account_id
+    selectel_region: str | None = None  # напр. ru-9
+    gpu_image_id: str | None = None  # snapshot с готовым worker'ом
+    gpu_flavor_id: str | None = None  # GPU-flavor (single RTX 4090)
+    gpu_network_id: str | None = None
+    gpu_keypair_name: str | None = None
+    # Сколько минут без спроса держать инстанс перед удалением.
+    gpu_idle_teardown_minutes: int = 20
+
     app_version: str = Field(default="0.1.0")
     log_level: str = "INFO"
 
