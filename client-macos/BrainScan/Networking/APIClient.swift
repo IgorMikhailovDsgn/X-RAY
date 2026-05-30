@@ -148,6 +148,40 @@ final class APIClient {
         try await sendJSON(method: "POST", path: "tumor-annotations", body: req, authorized: true)
     }
 
+    // MARK: - Detect (Phase 9)
+
+    struct DetectRequest: Encodable {
+        let screenshotId: UUID
+        let monitorIndex: Int
+    }
+
+    /// Один bbox от модели в координатах исходного screenshot'а (физические
+    /// пиксели, top-left origin). nil = модель отработала, ничего не нашла.
+    struct BBoxResultDTO: Decodable {
+        let x: Int
+        let y: Int
+        let w: Int
+        let h: Int
+        let confidence: Double
+    }
+
+    struct DetectResponse: Decodable {
+        let screenshotId: UUID
+        let monitorIndex: Int
+        let localizeModelVersion: String?
+        let tumorModelVersion: String?
+        let region: BBoxResultDTO?
+        let tumor: BBoxResultDTO?
+    }
+
+    func detect(screenshotId: UUID, monitorIndex: Int) async throws -> DetectResponse {
+        try await sendJSON(
+            method: "POST", path: "detect",
+            body: DetectRequest(screenshotId: screenshotId, monitorIndex: monitorIndex),
+            authorized: true
+        )
+    }
+
     // MARK: - Helpers
 
     private func sendJSON<Req: Encodable, Resp: Decodable>(

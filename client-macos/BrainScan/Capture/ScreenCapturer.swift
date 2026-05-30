@@ -15,6 +15,19 @@ struct DisplaySnapshot {
     let frame: CGRect
     /// dpi_scale_factor монитора (2.0 для Retina) — для конвертации в physical.
     let scaleFactor: CGFloat
+
+    /// Геометрия primary-монитора без захвата (image=nil). Используется Detect-
+    /// флоу, который снимает скрин потом через `AnnotationSubmitter.prepare`.
+    static func forPrimary() -> DisplaySnapshot? {
+        guard let screen = NSScreen.main else { return nil }
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        let displayID = (screen.deviceDescription[key] as? CGDirectDisplayID) ?? 0
+        let primaryIndex = NSScreen.screens.firstIndex(of: screen) ?? 0
+        return DisplaySnapshot(
+            displayID: displayID, monitorIndex: primaryIndex, image: nil,
+            frame: screen.frame, scaleFactor: screen.backingScaleFactor
+        )
+    }
 }
 
 enum ScreenCaptureError: Error {

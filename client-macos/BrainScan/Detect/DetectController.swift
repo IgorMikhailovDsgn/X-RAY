@@ -1,8 +1,10 @@
 import AppKit
 
-/// Оркестратор Detect-режима (мок-предсказания, пока `/detect` отдаёт 503).
-/// Поток: Detecting (HUD по центру экрана с pulse + Discard-текст) → результат →
-/// Detect Actions тулбар в позиции виджета: `[Back | Region | Tumor | Approve/Confirm | Edit]`.
+/// Оркестратор Detect-режима (Phase 9: реальный inference через POST /detect).
+/// Поток: Detecting (HUD по центру экрана с pulse + Discard-текст) → захват
+/// primary-монитора → uploadScreenshot → /detect → конвертация bbox (physical
+/// → logical с Y-flip) → Detect Actions тулбар в позиции виджета:
+/// `[Back | Region | Tumor | Approve/Confirm | Edit]`.
 final class DetectController {
     /// Завершение режима (Back/Discard/Approve) — AppDelegate показывает виджет
     /// обратно в его исходной позиции.
@@ -16,7 +18,6 @@ final class DetectController {
     private var keyMonitor: Any?
     private var result: DetectResult?
     private var longerWork: DispatchWorkItem?
-    private var resultWork: DispatchWorkItem?
     /// Центр тела виджета на момент входа в режим — тулбар появляется здесь же
     /// и сюда же возвращается виджет.
     private var bodyCenter: NSPoint = .zero
@@ -65,7 +66,7 @@ final class DetectController {
         panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         installKeyMonitor()
-        scheduleMockDetection()
+        Task { await runRealDetect() }
     }
 
     private func finish() {
@@ -76,21 +77,80 @@ final class DetectController {
         onFinished?()
     }
 
-    // MARK: - Mock-детекция
+    // MARK: - Real detect
 
-    private func scheduleMockDetection() {
+    /// Покажет «It takes longer…» если до результата не дошло за 5 c (cold-start
+    /// inference на CPU server'е: lazy torch import + 2 weight download).
+    private func scheduleLongerHint() {
         let longer = DispatchWorkItem { [weak self] in self?.overlay.showLongerMessage() }
         longerWork = longer
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: longer)
+    }
 
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let r = MockDetector.run(monitorIndex: self.overlay.mainMonitorIndex,
-                                     screenSize: self.overlay.mainMonitorSize)
-            self.presentResult(r)
+    private func runRealDetect() async {
+        await MainActor.run { self.scheduleLongerHint() }
+        do {
+            guard let primary = DisplaySnapshot.forPrimary() else {
+                throw NSError(domain: "BrainScan.Detect", code: -1, userInfo: [
+                    NSLocalizedDescriptionKey: "No primary screen"
+                ])
+            }
+            let geometry: [Int: DisplaySnapshot] = [primary.monitorIndex: primary]
+            let prepared = try await AnnotationSubmitter.prepare(geometry: geometry)
+            guard let snap = prepared[primary.monitorIndex] else {
+                throw NSError(domain: "BrainScan.Detect", code: -2, userInfo: [
+                    NSLocalizedDescriptionKey: "Capture missing for primary monitor"
+                ])
+            }
+            let screen = try await APIClient.shared.uploadScreenshots(
+                images: prepared.mapValues(\.png)
+            )
+            let resp = try await APIClient.shared.detect(
+                screenshotId: screen.id, monitorIndex: snap.monitorIndex
+            )
+            let result = Self.makeResult(from: resp, snap: snap)
+            await MainActor.run { self.presentResult(result) }
+        } catch {
+            NSLog("[BrainScan] Detect failed: %@", "\(error)")
+            await MainActor.run {
+                self.longerWork?.cancel()
+                self.overlay.showRegionsNotFound()
+                self.result = DetectResult(predictions: [])
+                self.toolbar.configure(result: self.result!)
+                self.positionToolbar()
+                self.panel.orderFrontRegardless()
+            }
         }
-        resultWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+    }
+
+    /// API-bbox (physical px, top-left) → Bbox (logical pt, bottom-left
+    /// origin монитора с Y-flip). Открыто `static` для unit-теста.
+    static func makeResult(
+        from resp: APIClient.DetectResponse, snap: PreparedSnapshot
+    ) -> DetectResult {
+        let region = resp.region.map { Self.toBbox($0, snap: snap) }
+        let tumor = resp.tumor.map { Self.toBbox($0, snap: snap) }
+        return DetectResult(predictions: [
+            DetectPrediction(
+                monitorIndex: snap.monitorIndex,
+                region: region, regionDetectionId: nil,
+                tumor: tumor, tumorDetectionId: nil
+            )
+        ])
+    }
+
+    static func toBbox(
+        _ b: APIClient.BBoxResultDTO, snap: PreparedSnapshot
+    ) -> Bbox {
+        let s = snap.scaleFactor
+        let monH = snap.frame.size.height       // logical height
+        let rect = CGRect(
+            x: CGFloat(b.x) / s,
+            y: monH - CGFloat(b.y + b.h) / s,   // Y-flip: API top-left → NSRect bottom-left
+            width: CGFloat(b.w) / s,
+            height: CGFloat(b.h) / s
+        )
+        return Bbox(rect: rect, monitorIndex: snap.monitorIndex)
     }
 
     private func presentResult(_ r: DetectResult) {
@@ -166,6 +226,5 @@ final class DetectController {
 
     private func cancelWork() {
         longerWork?.cancel(); longerWork = nil
-        resultWork?.cancel(); resultWork = nil
     }
 }
