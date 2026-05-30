@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -55,10 +56,18 @@ def run_training(model_type: str, dataset_id: str) -> dict[str, Any]:
             model_type, version, data_yaml, workdir
         )
 
+        # Phase 9 layout: models/<type>/<version>/{weights,artifacts}/...
         bucket, prefix = s3_io.models_bucket_and_prefix()
-        key = f"{prefix}weights/{model_type}/{version}/best.pt"
-        artifact_path = s3_io.upload_file(best_pt, bucket, key)
+        model_root = f"{prefix}{model_type}/{version}"
+        weights_key = f"{model_root}/weights/best.pt"
+        artifact_path = s3_io.upload_file(best_pt, bucket, weights_key)
         logger.info("train[%s]: weights uploaded → %s", model_type, artifact_path)
+
+        _upload_artifacts(
+            workdir=workdir, bucket=bucket, model_root=model_root,
+            metrics=metrics, mlflow_run_id=run_id, dataset_id=dataset_id,
+            model_type=model_type, version=version,
+        )
 
         result = api.training_complete(
             dataset_id,
@@ -87,6 +96,67 @@ def run_training(model_type: str, dataset_id: str) -> dict[str, Any]:
         raise
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+# --------------------------- artifacts upload (Phase 9) ---------------------------
+
+
+# YOLO val/train рисует эти файлы в run-dir; перебираем фиксированным списком,
+# отсутствующие пропускаем (например, labels.jpg есть не всегда).
+_YOLO_PLOTS = (
+    "results.png",
+    "confusion_matrix.png",
+    "confusion_matrix_normalized.png",
+    "PR_curve.png",
+    "F1_curve.png",
+    "R_curve.png",
+    "P_curve.png",
+    "labels.jpg",
+)
+
+
+def _upload_artifacts(
+    *,
+    workdir: Path,
+    bucket: str,
+    model_root: str,
+    metrics: dict[str, float],
+    mlflow_run_id: str | None,
+    dataset_id: str,
+    model_type: str,
+    version: str,
+) -> None:
+    """Загружает metrics.json + доступные YOLO val plots в
+    `models/<type>/<version>/artifacts/`.
+    """
+    artifacts_root = f"{model_root}/artifacts"
+
+    metrics_local = workdir / "metrics.json"
+    metrics_local.write_text(
+        json.dumps(
+            {
+                "model_type": model_type,
+                "version": version,
+                "dataset_id": dataset_id,
+                "mlflow_run_id": mlflow_run_id,
+                "metrics": metrics,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    s3_io.upload_file(
+        metrics_local, bucket, f"{artifacts_root}/metrics.json", "application/json"
+    )
+    logger.info("train[%s]: artifacts/metrics.json uploaded", model_type)
+
+    run_dir = workdir / "run"
+    for name in _YOLO_PLOTS:
+        f = run_dir / name
+        if not f.exists():
+            continue
+        s3_io.upload_file(f, bucket, f"{artifacts_root}/{name}", "image/png")
+        logger.info("train[%s]: artifacts/%s uploaded", model_type, name)
 
 
 # --------------------------- YOLO dataset prep ---------------------------

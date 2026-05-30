@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     s3_prefix_screenshots: str = ""
     s3_prefix_localize: str = ""
     s3_prefix_models: str = ""
+    # datasets/ — отдельный top-level префикс для manifest'ов (Phase 9 layout).
+    # Раньше манифест лежал под `s3_prefix_models + "datasets/"` → теперь под
+    # отдельным префиксом, рядом с `models/`, а не внутри. Manifest-bucket =
+    # s3_bucket_models (single-bucket setup).
+    s3_prefix_datasets: str = ""
 
     redis_url: str = "redis://localhost:6379/0"
 

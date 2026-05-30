@@ -286,10 +286,10 @@ def _build_manifest_dict(
 
 
 def _manifest_s3_key(model_type: str, version: str) -> str:
-    # `datasets/<type>/<version>/manifest.json` под s3_prefix_models — без
-    # путаницы с MLflow artifact tree.
+    # Phase 9 layout: `<s3_prefix_datasets><type>/<version>/manifest.json`.
+    # datasets/ — отдельный top-level префикс рядом с models/, а не внутри.
     return (
-        f"{settings.s3_prefix_models}datasets/{model_type}/{version}/manifest.json"
+        f"{settings.s3_prefix_datasets}{model_type}/{version}/manifest.json"
     )
 
 
