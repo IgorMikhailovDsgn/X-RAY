@@ -42,6 +42,12 @@ class S3Client:
     async def head_bucket(self, bucket: str) -> None:
         await asyncio.to_thread(self._client.head_bucket, Bucket=bucket)
 
+    async def download_bytes(self, *, bucket: str, key: str) -> bytes:
+        def _get() -> bytes:
+            obj = self._client.get_object(Bucket=bucket, Key=key)
+            return obj["Body"].read()  # type: ignore[no-any-return]
+        return await asyncio.to_thread(_get)
+
 
 def _build_client() -> Any:
     return boto3.client(

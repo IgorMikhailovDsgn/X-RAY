@@ -20,6 +20,14 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY server/ ./
 RUN uv sync --frozen --no-dev
 
+# Inference deps для /detect (Phase 9, подход A — CPU torch прямо в server-образе).
+# Отдельно от lock'а: torch CPU wheel index отличается от PyPI и кросс-платформенно
+# не лочится надёжно. Веса yolov8n ~6MB, CPU-инференс на dev-VPS укладывается в сек.
+RUN uv pip install --no-cache --python /app/.venv/bin/python \
+        --index-url https://download.pytorch.org/whl/cpu \
+        --extra-index-url https://pypi.org/simple \
+        torch torchvision ultralytics opencv-python-headless pillow
+
 
 FROM python:3.12-slim AS runtime
 
