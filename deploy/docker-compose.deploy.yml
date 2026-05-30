@@ -29,6 +29,10 @@ services:
       - vhost:/etc/nginx/vhost.d
       - vhost-htpasswd:/etc/nginx/htpasswd
       - html:/usr/share/nginx/html
+      # Phase 9: persist per-vhost overrides (proxy_read_timeout 180s для cold
+      # /detect). File-level bind накладывается поверх vhost-volume; auto-генерёнки
+      # acme-companion в той же папке остаются нетронуты.
+      - ./nginx-vhost.d/dev-api.cfi-messenger.ru_location:/etc/nginx/vhost.d/dev-api.cfi-messenger.ru_location:ro
     restart: unless-stopped
 
   acme-companion:

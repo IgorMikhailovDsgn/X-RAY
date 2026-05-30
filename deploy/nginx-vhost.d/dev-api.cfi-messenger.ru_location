@@ -1,0 +1,9 @@
+# Per-vhost nginx-proxy overrides for dev-api.cfi-messenger.ru.
+#
+# Phase 9: `/detect` cold start triggers lazy torch import + 2× weight download
+# from S3 + YOLO load on CPU — up to ~30 s on a fresh container. Default
+# proxy_read_timeout=60s cuts the client mid-flight. Lift to 180 s so cold
+# inference fits comfortably (warm calls finish in 3-5 s).
+proxy_read_timeout 180s;
+proxy_send_timeout 60s;
+proxy_connect_timeout 30s;
