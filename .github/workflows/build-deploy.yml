@@ -97,6 +97,10 @@ jobs:
           port: ${{ secrets.VPS_PORT || 22 }}
           envs: IMAGE_TAG
           script_stop: true
+          # Холодный pull server-образа (torch+YOLOv8, ~3GB) уходит за дефолтный
+          # 10m timeout; поднимаем с запасом, чтобы редкие медленные сетевые окна
+          # не валили деплой.
+          command_timeout: 60m
           # Скрипт идемпотентен: pull нового образа → накатить миграции
           # (one-shot контейнер) → перезапустить server+worker. Redis не трогаем
           # (rolling-deploy не нужен — single-node dev). После успеха курлим /health.
