@@ -7,8 +7,7 @@ options:
     macOS: "12.3"   # минимум для ScreenCaptureKit (Phase C step 5)
   groupSortPosition: top
 
-# Три конфигурации: Debug → local backend, Staging/Release → облачные среды
-# (URL'ы пока placeholder'ы, подменим, когда поднимем dev/stage/prod в TimeWebCloud).
+# Debug/Staging ходят в dev-окружение TimeWebCloud, Release — placeholder под будущий prod.
 configs:
   Debug: debug
   Staging: release
@@ -46,10 +45,9 @@ targets:
         CFBundleVersion: "1"
         NSHumanReadableCopyright: "© 2026 BrainScan"
         NSPrincipalClass: NSApplication
-        # Dev-сборка ходит на http://localhost:8000 — разрешаем local networking
-        # без HTTPS. Production-домены пойдут через стандартный ATS поверх TLS.
-        NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
+        # Все сборки ходят через TLS (стандартный ATS).
+        # Purpose-string для системного TCC-диалога Screen Recording.
+        NSScreenCaptureUsageDescription: "BrainScan needs Screen Recording access to capture brain scans on your screen for analysis."
         # Подставляется при сборке из build-settings (`BRAINSCAN_API_BASE_URL`),
         # на рантайме читается в `APIConfig.baseURL` через `Bundle.main`.
         BrainScanAPIBaseURL: $(BRAINSCAN_API_BASE_URL)
@@ -61,10 +59,9 @@ targets:
         INFOPLIST_FILE: BrainScan/Info.plist
       configs:
         Debug:
-          BRAINSCAN_API_BASE_URL: http://localhost:8000/api/v1
+          # Dev-окружение в TimeWebCloud. Локальный docker-сервер больше не используется.
+          BRAINSCAN_API_BASE_URL: https://dev-api.cfi-messenger.ru/api/v1
         Staging:
-          # Dev-окружение в TimeWebCloud (Phase 2). Меняем на отдельный stage-домен,
-          # когда поднимем настоящий stage в Phase 4.
           BRAINSCAN_API_BASE_URL: https://dev-api.cfi-messenger.ru/api/v1
         Release:
           # TODO: подставить реальный prod-URL.

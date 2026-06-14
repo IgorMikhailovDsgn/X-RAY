@@ -1,11 +1,7 @@
 import Foundation
 
 /// Базовый URL API подтягивается из `Info.plist` (ключ `BrainScanAPIBaseURL`),
-/// который заполняется build-настройкой `BRAINSCAN_API_BASE_URL` per-config:
-/// - Debug   → `http://localhost:8000/api/v1` (локальный uvicorn)
-/// - Staging → stage-домен в облаке
-/// - Release → prod-домен в облаке
-///
+/// который заполняется build-настройкой `BRAINSCAN_API_BASE_URL` per-config.
 /// Конфигурации описаны в [client-macos/project.yml](../../project.yml).
 enum APIConfig {
     static let baseURL: URL = {
