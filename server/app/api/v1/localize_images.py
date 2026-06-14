@@ -42,7 +42,7 @@ async def upload_localize_image(
     if not content:
         raise ValidationAppError("crop file is empty")
 
-    # Layout кропа: <prefix><device_id>/<YYYY-MM>/<image_id>.png.
+    # Layout кропа: <prefix><device_id>/<DD.MM.YY>/<image_id>.png.
     # Берём device_id и captured_at родительского скриншота, чтобы все артефакты
     # одной съёмки лежали в одной партиции и пути дев-устройств не смешивались.
     screen = await session.get(Screenshot, meta_payload.screen_id)
@@ -50,12 +50,12 @@ async def upload_localize_image(
         raise ValidationAppError(
             "screen_id not found", details={"screen_id": str(meta_payload.screen_id)}
         )
-    yyyymm = screen.captured_at.astimezone(UTC).strftime("%Y-%m")
+    ddmmyy = screen.captured_at.astimezone(UTC).strftime("%d.%m.%y")
 
     image_id = uuid.uuid4()
     key = (
         f"{settings.s3_prefix_localize}"
-        f"{screen.device_id}/{yyyymm}/{image_id}.png"
+        f"{screen.device_id}/{ddmmyy}/{image_id}.png"
     )
     localize_path = await storage.upload_bytes(
         bucket=settings.s3_bucket_localize,

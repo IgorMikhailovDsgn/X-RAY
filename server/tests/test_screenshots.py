@@ -8,9 +8,9 @@ PNG_1X1 = (
     b"\x00IEND\xaeB`\x82"
 )
 
-# Layout (после Phase 4): <device_id>/<YYYY-MM>/<screenshot_id>_m<N>.png
+# Layout: <device_id>/<DD.MM.YY>/<screenshot_id>_m<N>.png
 SCREENSHOT_KEY_RE = re.compile(
-    r"^[A-Za-z0-9_-]+/\d{4}-\d{2}/[0-9a-f-]{36}_m\d+\.png$"
+    r"^[A-Za-z0-9_-]+/\d{2}\.\d{2}\.\d{2}/[0-9a-f-]{36}_m\d+\.png$"
 )
 
 
@@ -32,7 +32,7 @@ async def test_screenshots_single_monitor(client, auth_headers, fake_s3):
     assert body["monitor_count"] == 1
     assert set(body["screen_paths"].keys()) == {"0"}
     assert body["screen_paths"]["0"].startswith("s3://screenshots/")
-    # Phase 4 layout: ключ внутри бакета = mac-1/YYYY-MM/<uuid>_m0.png
+    # Layout: ключ внутри бакета = mac-1/DD.MM.YY/<uuid>_m0.png
     (_bucket, key) = next(iter(fake_s3.objects))
     assert key.startswith("mac-1/")
     assert key.endswith("_m0.png")
@@ -54,7 +54,7 @@ async def test_screenshots_two_monitors(client, auth_headers, fake_s3):
     assert resp.status_code == 201
     assert set(resp.json()["screen_paths"].keys()) == {"0", "1"}
     assert len(fake_s3.objects) == 2
-    # Оба монитора должны лежать в одной партиции <device_id>/<YYYY-MM>/.
+    # Оба монитора должны лежать в одной партиции <device_id>/<DD.MM.YY>/.
     prefixes = {k.rsplit("/", 1)[0] for _, k in fake_s3.objects}
     assert len(prefixes) == 1, f"monitors split across partitions: {prefixes}"
 

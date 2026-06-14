@@ -3,9 +3,9 @@ import re
 
 from tests.test_screenshots import PNG_1X1
 
-# Layout (после Phase 4): <device_id>/<YYYY-MM>/<image_id>.png
+# Layout: <device_id>/<DD.MM.YY>/<image_id>.png
 LOCALIZE_KEY_RE = re.compile(
-    r"^[A-Za-z0-9_-]+/\d{4}-\d{2}/[0-9a-f-]{36}\.png$"
+    r"^[A-Za-z0-9_-]+/\d{2}\.\d{2}\.\d{2}/[0-9a-f-]{36}\.png$"
 )
 
 
@@ -72,7 +72,7 @@ async def test_localize_image_with_annotation(client, auth_headers, fake_s3):
     assert body["bbox"] == {"x": 10, "y": 20, "w": 100, "h": 80}
     assert body["localize_path"].startswith("s3://localize/")
     assert len(fake_s3.objects) == 2  # 1 screenshot + 1 crop
-    # Phase 4 layout: crop key = mac-1/<YYYY-MM>/<image_id>.png
+    # Layout: crop key = mac-1/<DD.MM.YY>/<image_id>.png
     localize_keys = [k for b, k in fake_s3.objects if b == "localize"]
     assert len(localize_keys) == 1
     key = localize_keys[0]
