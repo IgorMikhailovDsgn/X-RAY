@@ -92,12 +92,13 @@ final class DetectActionsToolbarView: NSView {
         needsLayout = true
     }
 
-    /// Сборка тулбара под результат детекции.
+    /// Сборка тулбара под результат детекции. Plate'ы показывают первую
+    /// найденную сущность каждого типа (overlay рисует все); полное
+    /// редактирование списка — в Edit → Annotate.
     func configure(result: DetectResult) {
-        // Берём первое предсказание — мульти-монитор поддержим позже вместе с реальным /detect.
         let prediction = result.predictions.first
-        let regionBox = prediction?.region
-        let tumorBox = prediction?.tumor
+        let regionBox = prediction?.regions.first
+        let tumorBox = prediction?.tumors.first
 
         var views: [NSView] = [backButton, sepAfterBack]
         if let regionBox {

@@ -156,7 +156,7 @@ final class APIClient {
     }
 
     /// Один bbox от модели в координатах исходного screenshot'а (физические
-    /// пиксели, top-left origin). nil = модель отработала, ничего не нашла.
+    /// пиксели, top-left origin).
     struct BBoxResultDTO: Decodable {
         let x: Int
         let y: Int
@@ -165,13 +165,26 @@ final class APIClient {
         let confidence: Double
     }
 
+    /// Один найденный регион + опциональная вложенная опухоль. `tumor.x/y`
+    /// уже сдвинуты на `region.x/y` сервером (в координатах исходного скрина).
+    struct RegionPredictionDTO: Decodable {
+        let region: BBoxResultDTO
+        let tumor: BBoxResultDTO?
+    }
+
     struct DetectResponse: Decodable {
         let screenshotId: UUID
         let monitorIndex: Int
         let localizeModelVersion: String?
         let tumorModelVersion: String?
-        let region: BBoxResultDTO?
-        let tumor: BBoxResultDTO?
+        let regions: [RegionPredictionDTO]
+        enum CodingKeys: String, CodingKey {
+            case screenshotId = "screenshot_id"
+            case monitorIndex = "monitor_index"
+            case localizeModelVersion = "localize_model_version"
+            case tumorModelVersion = "tumor_model_version"
+            case regions
+        }
     }
 
     func detect(screenshotId: UUID, monitorIndex: Int) async throws -> DetectResponse {

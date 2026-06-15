@@ -49,35 +49,42 @@ def _load_model(model_id: str, artifact_path: str) -> Any:
     return YOLO(path)
 
 
-def _predict_top_bbox(
+def _predict_all_bboxes(
     model_id: str, artifact_path: str, image_bytes: bytes
-) -> dict[str, Any] | None:
-    """Inference на одном image_bytes, возвращает top-confidence bbox или None."""
+) -> list[dict[str, Any]]:
+    """Inference на одном image_bytes, возвращает все найденные bbox'ы,
+    отсортированные по confidence по убыванию. Пустой список = ничего не нашли.
+    """
     from PIL import Image
 
     model = _load_model(model_id, artifact_path)
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     results = model.predict(source=img, verbose=False, conf=_CONF_THRESHOLD)
     if not results:
-        return None
+        return []
     boxes = results[0].boxes
     if boxes is None or len(boxes) == 0:
-        return None
-    confs = boxes.conf.cpu().numpy()
-    top = int(confs.argmax())
-    x1, y1, x2, y2 = boxes.xyxy[top].cpu().numpy().tolist()
-    return {
-        "x": max(0, round(x1)),
-        "y": max(0, round(y1)),
-        "w": max(1, round(x2 - x1)),
-        "h": max(1, round(y2 - y1)),
-        "confidence": float(confs[top]),
-    }
+        return []
+    confs = boxes.conf.cpu().numpy().tolist()
+    xyxy = boxes.xyxy.cpu().numpy().tolist()
+    items = []
+    for (x1, y1, x2, y2), c in zip(xyxy, confs):
+        items.append({
+            "x": max(0, round(x1)),
+            "y": max(0, round(y1)),
+            "w": max(1, round(x2 - x1)),
+            "h": max(1, round(y2 - y1)),
+            "confidence": float(c),
+        })
+    items.sort(key=lambda b: b["confidence"], reverse=True)
+    return items
 
 
-async def predict(model_id: str, artifact_path: str, image_bytes: bytes) -> dict[str, Any] | None:
-    """Async-обёртка над синхронным inference (CPU-bound)."""
-    return await asyncio.to_thread(_predict_top_bbox, model_id, artifact_path, image_bytes)
+async def predict_all(model_id: str, artifact_path: str, image_bytes: bytes) -> list[dict[str, Any]]:
+    """Async-обёртка над синхронным inference (CPU-bound). Возвращает все
+    найденные bbox'ы, отсортированные по confidence убыванию.
+    """
+    return await asyncio.to_thread(_predict_all_bboxes, model_id, artifact_path, image_bytes)
 
 
 def crop_png(image_bytes: bytes, bbox: dict[str, Any]) -> bytes:

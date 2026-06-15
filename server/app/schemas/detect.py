@@ -22,12 +22,23 @@ class BBoxResult(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class RegionPrediction(BaseModel):
+    """Один найденный регион + опциональная вложенная опухоль.
+
+    `tumor.x/y` — в координатах исходного скрина (уже сдвинуто на region.x/y),
+    не в crop-пространстве. Если tumor-модель не задеплоена либо ничего не
+    нашла в crop'е этого региона — `tumor=None`.
+    """
+
+    region: BBoxResult
+    tumor: BBoxResult | None = None
+
+
 class DetectResponse(BaseModel):
     screenshot_id: uuid.UUID
     monitor_index: int
     localize_model_version: str | None = None
     tumor_model_version: str | None = None
-    # NULL = модель отработала, ничего не нашла (важно: это не ошибка).
-    region: BBoxResult | None = None
-    # tumor.x/y — в координатах исходного скрина (не crop'а).
-    tumor: BBoxResult | None = None
+    # Все найденные регионы (отсортированы по confidence убыванию). Пустой
+    # список = модель отработала, регионов не нашла.
+    regions: list[RegionPrediction] = []

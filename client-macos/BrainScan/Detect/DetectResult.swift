@@ -1,28 +1,29 @@
 import AppKit
 
-/// Предсказание автодетекции для одного монитора. `region`/`tumor` = nil означает
-/// «модель не нашла» (→ null при предзаполнении Edit). `detectionId` нужен для
-/// action-маппинга на бэкенде (confirmed/corrected) — пробрасывается при Send.
+/// Предсказания автодетекции для одного монитора. Пустые массивы означают
+/// «модель не нашла» (→ null при предзаполнении Edit, кнопка Region NULL/
+/// Tumor NULL в тулбаре). `tumors` параллелен `regions` по индексу опухолям,
+/// которые сервер нашёл хоть в одном из регионов — но nil-tumor-регионы
+/// сервер отдаёт без записи в `tumors`, так что массивы не выравнены 1:1.
+/// Координаты — top-left logical, как у всех overlay-канвасов (isFlipped=true).
 struct DetectPrediction {
     let monitorIndex: Int
-    let region: Bbox?
-    let regionDetectionId: UUID?
-    let tumor: Bbox?
-    let tumorDetectionId: UUID?
+    let regions: [Bbox]
+    let tumors: [Bbox]
 }
 
 /// Результат сессии автодетекции по всем мониторам.
 struct DetectResult {
     let predictions: [DetectPrediction]
 
-    var hasAnyRegion: Bool { predictions.contains { $0.region != nil } }
+    var hasAnyRegion: Bool { predictions.contains { !$0.regions.isEmpty } }
 
     /// Предзаполнение Region/Tumor для входа в Edit (см. спеку «Вход через Edit»).
-    /// Нет region → оба null (каскад). Нет tumor при наличии region → tumor null.
+    /// Нет региона → оба null (каскад). Нет опухоли при наличии региона → tumor null.
     func prefillStates() -> (region: EntityState, tumor: EntityState) {
-        let regionBoxes = predictions.compactMap { $0.region }
+        let regionBoxes = predictions.flatMap { $0.regions }
         guard !regionBoxes.isEmpty else { return (.null, .null) }
-        let tumorBoxes = predictions.compactMap { $0.tumor }
+        let tumorBoxes = predictions.flatMap { $0.tumors }
         return (.bboxes(regionBoxes), tumorBoxes.isEmpty ? .null : .bboxes(tumorBoxes))
     }
 }
@@ -37,8 +38,7 @@ enum MockDetector {
         let findsRegion = callCount % 2 == 0
         guard findsRegion else {
             return DetectResult(predictions: [
-                DetectPrediction(monitorIndex: monitorIndex, region: nil,
-                                 regionDetectionId: UUID(), tumor: nil, tumorDetectionId: nil)
+                DetectPrediction(monitorIndex: monitorIndex, regions: [], tumors: [])
             ])
         }
         // Region по центру, tumor вложен внутрь — координаты в logical-точках монитора.
@@ -54,10 +54,8 @@ enum MockDetector {
         return DetectResult(predictions: [
             DetectPrediction(
                 monitorIndex: monitorIndex,
-                region: Bbox(rect: regionRect, monitorIndex: monitorIndex),
-                regionDetectionId: UUID(),
-                tumor: Bbox(rect: tumorRect, monitorIndex: monitorIndex),
-                tumorDetectionId: UUID()
+                regions: [Bbox(rect: regionRect, monitorIndex: monitorIndex)],
+                tumors: [Bbox(rect: tumorRect, monitorIndex: monitorIndex)]
             )
         ])
     }

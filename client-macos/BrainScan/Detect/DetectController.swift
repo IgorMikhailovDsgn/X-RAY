@@ -56,6 +56,26 @@ final class DetectController {
     /// там и остаётся»).
     func start(bodyCenter: NSPoint) {
         self.bodyCenter = bodyCenter
+        // Gate: Screen Recording обязателен — без него ни захватить, ни
+        // отрисовать оверлей нет смысла. Если юзер откажет, повторный клик
+        // снова поднимет системный промпт (см. PermissionGate).
+        PermissionGate.ensureScreenRecording { [weak self] granted in
+            guard let self else { return }
+            guard granted else {
+                ToastController.shared.show(
+                    text: "Enable Screen Recording in System Settings",
+                    icon: Icon24.discard.makeImage(pointSize: 16),
+                    iconTint: .systemOrange,
+                    near: bodyCenter
+                )
+                self.onFinished?()
+                return
+            }
+            self.beginDetectSession()
+        }
+    }
+
+    private func beginDetectSession() {
         result = nil
         overlay.present()
         overlay.showDetecting()
@@ -123,18 +143,22 @@ final class DetectController {
         }
     }
 
-    /// API-bbox (physical px, top-left) → Bbox (logical pt, bottom-left
-    /// origin монитора с Y-flip). Открыто `static` для unit-теста.
+    /// API-bbox (physical px, top-left) → Bbox (logical pt, top-left). Все
+    /// рендер-канвасы (DetectOverlayView, BboxCanvasView) — isFlipped=true,
+    /// конвенция совпадает с CoordinateConverter.physical. Открыто `static`
+    /// для unit-теста.
     static func makeResult(
         from resp: APIClient.DetectResponse, snap: PreparedSnapshot
     ) -> DetectResult {
-        let region = resp.region.map { Self.toBbox($0, snap: snap) }
-        let tumor = resp.tumor.map { Self.toBbox($0, snap: snap) }
+        let regions = resp.regions.map { Self.toBbox($0.region, snap: snap) }
+        let tumors = resp.regions.compactMap {
+            $0.tumor.map { Self.toBbox($0, snap: snap) }
+        }
         return DetectResult(predictions: [
             DetectPrediction(
                 monitorIndex: snap.monitorIndex,
-                region: region, regionDetectionId: nil,
-                tumor: tumor, tumorDetectionId: nil
+                regions: regions,
+                tumors: tumors
             )
         ])
     }
@@ -143,10 +167,9 @@ final class DetectController {
         _ b: APIClient.BBoxResultDTO, snap: PreparedSnapshot
     ) -> Bbox {
         let s = snap.scaleFactor
-        let monH = snap.frame.size.height       // logical height
         let rect = CGRect(
             x: CGFloat(b.x) / s,
-            y: monH - CGFloat(b.y + b.h) / s,   // Y-flip: API top-left → NSRect bottom-left
+            y: CGFloat(b.y) / s,
             width: CGFloat(b.w) / s,
             height: CGFloat(b.h) / s
         )

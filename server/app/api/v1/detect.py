@@ -4,10 +4,12 @@ Pipeline на скриншоте:
   1. Получаем screenshot row → screen_paths[monitor_index] = s3:// URL.
   2. Достаём текущие prod-модели localize + tumor (промоут через
      /admin/models/{id}/promote; на запрос берётся последняя prod).
-  3. Скачиваем PNG скриншота, гоним через localize → bbox (или None).
-  4. Если region найден и tumor-модель есть → crop по bbox, гоним через tumor;
-     tumor.x/y конвертируются обратно в координаты исходного скрина.
-  5. Ответ — DetectResponse с обоими bbox'ами и версиями моделей.
+  3. Скачиваем PNG скриншота, гоним через localize → список регионов
+     (отсортирован по confidence убыванию).
+  4. Для каждого региона — если tumor-модель есть, кропаем и гоним tumor;
+     tumor.x/y из crop-пространства переводятся обратно в координаты
+     исходного скрина (сдвиг на region.x/y).
+  5. Ответ — DetectResponse.regions = [RegionPrediction(region, tumor?)].
 
 Inference синхронный/CPU-bound — обёрнут в asyncio.to_thread внутри
 services/inference.py. Веса YOLO lazy-load'ятся при первом запросе и держатся
@@ -26,8 +28,8 @@ from app.api.v1.deps import CurrentUser, SessionDep, StorageDep
 from app.core.exceptions import AppError
 from app.models.mlops import Deployment, Model
 from app.models.screenshot import Screenshot
-from app.schemas.detect import BBoxResult, DetectRequest, DetectResponse
-from app.services.inference import crop_png, predict
+from app.schemas.detect import BBoxResult, DetectRequest, DetectResponse, RegionPrediction
+from app.services.inference import crop_png, predict_all
 
 router = APIRouter(tags=["detect"])
 
@@ -85,30 +87,40 @@ async def detect(
         bucket=u.netloc, key=u.path.lstrip("/")
     )
 
-    region = await predict(str(loc_model.id), loc_model.artifact_path, image_bytes)
-    region_result = BBoxResult(**region) if region is not None else None
+    regions = await predict_all(
+        str(loc_model.id), loc_model.artifact_path, image_bytes
+    )
 
-    tumor_result: BBoxResult | None = None
-    if region is not None and tum_model is not None:
-        crop_bytes = crop_png(image_bytes, region)
-        tumor_local = await predict(
-            str(tum_model.id), tum_model.artifact_path, crop_bytes
-        )
-        if tumor_local is not None:
-            # tumor_local в координатах crop'а → переводим в координаты исходника
-            tumor_result = BBoxResult(
-                x=region["x"] + tumor_local["x"],
-                y=region["y"] + tumor_local["y"],
-                w=tumor_local["w"],
-                h=tumor_local["h"],
-                confidence=tumor_local["confidence"],
+    predictions: list[RegionPrediction] = []
+    for region in regions:
+        tumor_result: BBoxResult | None = None
+        if tum_model is not None:
+            crop_bytes = crop_png(image_bytes, region)
+            tumor_in_crop = await predict_all(
+                str(tum_model.id), tum_model.artifact_path, crop_bytes
             )
+            if tumor_in_crop:
+                # Берём top-1 опухоль на регион — обычно их 0-1, а если YOLO
+                # дала несколько кандидатов, top-confidence — самый честный
+                # сигнал. Координаты из crop-пространства → в координаты
+                # исходного скрина (сдвиг на region.x/y).
+                top = tumor_in_crop[0]
+                tumor_result = BBoxResult(
+                    x=region["x"] + top["x"],
+                    y=region["y"] + top["y"],
+                    w=top["w"],
+                    h=top["h"],
+                    confidence=top["confidence"],
+                )
+        predictions.append(RegionPrediction(
+            region=BBoxResult(**region),
+            tumor=tumor_result,
+        ))
 
     return DetectResponse(
         screenshot_id=payload.screenshot_id,
         monitor_index=payload.monitor_index,
         localize_model_version=loc_model.version,
         tumor_model_version=tum_model.version if tum_model else None,
-        region=region_result,
-        tumor=tumor_result,
+        regions=predictions,
     )
