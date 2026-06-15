@@ -241,6 +241,14 @@ final class APIClient {
         catch { throw APIError.network(error) }
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard 200..<300 ~= http.statusCode else {
+            // 401 = сервер отверг токен. Просим AppDelegate сразу перевести
+            // виджет в Sign In — иначе пользователь будет тыкать и получать
+            // невнятные ошибки. Нотификация идёт даже для запросов от пуллеров.
+            if http.statusCode == 401 {
+                NotificationCenter.default.post(
+                    name: .userSessionExpired, object: nil
+                )
+            }
             throw APIError.http(status: http.statusCode, message: parseErrorMessage(data))
         }
         do { return try decoder.decode(Resp.self, from: data) }

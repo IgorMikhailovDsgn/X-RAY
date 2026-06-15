@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     alembic_database_url: str
 
     jwt_secret: str
-    jwt_access_ttl_seconds: int = 900
+    jwt_access_ttl_seconds: int = 1800
     jwt_refresh_ttl_seconds: int = 2_592_000
 
     s3_endpoint_url: str

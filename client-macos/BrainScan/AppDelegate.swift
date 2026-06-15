@@ -15,6 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let poller = StatusPoller()
     private var cancellables = Set<AnyCancellable>()
     private var isSignedIn = false
+    /// Inactivity-таймер: каждые 30с проверяет SessionActivity.isExpired (15 мин
+    /// по умолчанию) и автоматически signOut'ит, если юзер забил.
+    private var inactivityTimer: Timer?
+    private let inactivityCheckInterval: TimeInterval = 30
 
     func applicationDidFinishLaunching(_: Notification) {
         // Стартуем с пессимистичного `.noServer` — первый успешный poll заменит.
@@ -24,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         widget.onAnnotateClicked = { [weak self] in self?.handleAnnotate() }
         widget.onDetectClicked = { [weak self] in self?.handleDetect() }
         widget.onSettingsClicked = { [weak self] in self?.handleSettings() }
+        widget.onSignInClicked = { [weak self] in self?.signIn.present() }
         self.widget = widget
 
         let menubar = MenubarController()
@@ -31,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menubar.onAnnotate = { [weak self] in self?.handleAnnotate() }
         menubar.onDetect = { [weak self] in self?.handleDetect() }
         menubar.onSettings = { [weak self] in self?.handleSettings() }
+        menubar.onSignIn = { [weak self] in self?.signIn.present() }
         self.menubar = menubar
 
         annotate.onFinished = { [weak self] _ in
@@ -61,15 +67,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         installGlobalHotkeys()
         bindWidgetStatus()
+        observeSessionExpiry()
 
         // Гейтинг старта: считаем сессию валидной только если access-токен не истёк.
         // Refresh-on-401 ещё не реализован → даже свежезащиченный access после рестарта
-        // часто будет требовать перелогина (TTL ~15 мин). Виджет показываем только
+        // часто будет требовать перелогина (TTL 30 мин). Виджет показываем только
         // после `didSignIn()`, до этого видно только окно входа.
         if let pair = (try? tokenStore.load()) ?? nil, !pair.isAccessExpired() {
             didSignIn()
         } else {
-            showSignIn()
+            showSignedOutWidget()
+        }
+    }
+
+    /// 401 от любого эндпоинта или срабатывание inactivity-таймера приводят
+    /// сюда. Идемпотентно (несколько постов подряд = один signOut).
+    private func observeSessionExpiry() {
+        NotificationCenter.default.addObserver(
+            forName: .userSessionExpired, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.isSignedIn else { return }
+            self.signOut()
         }
     }
 
@@ -129,26 +147,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func didSignIn() {
         isSignedIn = true
         signIn.hide()
+        widget?.setSignedIn(true)
         widget?.show()
+        menubar?.setSignedIn(true)
         poller.start()   // /models/deployed требует Bearer — стартуем после логина.
+        SessionActivity.shared.reset()
+        startInactivityTimer()
+        Task { await NotificationsManager.shared.requestAuthorizationOnce() }
     }
 
-    private func showSignIn() {
+    private func startInactivityTimer() {
+        inactivityTimer?.invalidate()
+        let timer = Timer.scheduledTimer(
+            withTimeInterval: inactivityCheckInterval, repeats: true
+        ) { _ in
+            // weak self не делаем — timer и так держится через invalidate().
+            Task { @MainActor [weak self] in
+                guard let self, self.isSignedIn else { return }
+                if SessionActivity.shared.isExpired() {
+                    NotificationCenter.default.post(
+                        name: .userSessionExpired, object: nil
+                    )
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        inactivityTimer = timer
+    }
+
+    private func stopInactivityTimer() {
+        inactivityTimer?.invalidate()
+        inactivityTimer = nil
+    }
+
+    /// Signed-out: виджет остаётся видимым, но в режиме [Войти] [Закрыть] —
+    /// окно Sign In не открываем автоматически на старте без сессии, чтобы
+    /// юзер сам решал, входить или нет (кнопка «Войти» на виджете и в menubar).
+    private func showSignedOutWidget() {
         isSignedIn = false
-        widget?.hide()
-        signIn.present()
+        widget?.setSignedIn(false)
+        widget?.show()
+        menubar?.setSignedIn(false)
     }
 
     private func signOut() {
         poller.stop()
+        stopInactivityTimer()
         try? tokenStore.clear()
-        showSignIn()
+        settings.hide()
+        showSignedOutWidget()
     }
 
     // MARK: - Actions (guarded by sign-in)
 
     private func handleAnnotate() {
         guard isSignedIn, let widget else { return }
+        SessionActivity.shared.markActive()
         let center = widget.bodyCenterOnScreen
         widget.hide()
         annotate.start(bodyCenter: center)
@@ -156,17 +210,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleDetect() {
         guard isSignedIn, let widget, widget.status.isDetectEnabled else { return }
+        SessionActivity.shared.markActive()
         let center = widget.bodyCenterOnScreen
         widget.hide()
         detect.start(bodyCenter: center)
     }
 
     private func handleSettings() {
+        SessionActivity.shared.markActive()
         settings.present()
     }
 
     private func toggleWidget() {
         guard isSignedIn else { return }
+        SessionActivity.shared.markActive()
         widget?.toggle()
     }
 
@@ -179,11 +236,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // ⇧⌘⏎ — Show widget
             .init(id: 1, keyCode: UInt32(kVK_Return), modifiers: cmdShift) { [weak self] in
                 guard let self, self.isSignedIn else { return }
+                SessionActivity.shared.markActive()
                 self.widget?.show()
             },
             // ⇧⌘X — Hide widget
             .init(id: 2, keyCode: UInt32(kVK_ANSI_X), modifiers: cmdShift) { [weak self] in
                 guard let self, self.isSignedIn else { return }
+                SessionActivity.shared.markActive()
                 self.widget?.hide()
             },
             // ⌘S — Settings (доступно всегда)
