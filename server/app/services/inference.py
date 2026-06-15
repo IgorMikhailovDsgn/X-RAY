@@ -68,7 +68,7 @@ def _predict_all_bboxes(
     confs = boxes.conf.cpu().numpy().tolist()
     xyxy = boxes.xyxy.cpu().numpy().tolist()
     items = []
-    for (x1, y1, x2, y2), c in zip(xyxy, confs):
+    for (x1, y1, x2, y2), c in zip(xyxy, confs, strict=True):
         items.append({
             "x": max(0, round(x1)),
             "y": max(0, round(y1)),
@@ -80,11 +80,15 @@ def _predict_all_bboxes(
     return items
 
 
-async def predict_all(model_id: str, artifact_path: str, image_bytes: bytes) -> list[dict[str, Any]]:
+async def predict_all(
+    model_id: str, artifact_path: str, image_bytes: bytes
+) -> list[dict[str, Any]]:
     """Async-обёртка над синхронным inference (CPU-bound). Возвращает все
     найденные bbox'ы, отсортированные по confidence убыванию.
     """
-    return await asyncio.to_thread(_predict_all_bboxes, model_id, artifact_path, image_bytes)
+    return await asyncio.to_thread(
+        _predict_all_bboxes, model_id, artifact_path, image_bytes
+    )
 
 
 def crop_png(image_bytes: bytes, bbox: dict[str, Any]) -> bytes:
