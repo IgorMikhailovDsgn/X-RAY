@@ -148,6 +148,81 @@ final class APIClient {
         try await sendJSON(method: "POST", path: "tumor-annotations", body: req, authorized: true)
     }
 
+    // MARK: - Detect annotations batch (Phase 10)
+
+    /// Один region-item в batch'е. Координаты bbox — screen-space физ. пиксели,
+    /// как у `localize_detections.bbox`. action — `confirmed | corrected | created`.
+    struct LocalizeBatchItem: Encodable {
+        let detectionId: UUID?
+        let monitorIndex: Int
+        let bbox: BboxDTO?
+        let action: String
+        enum CodingKeys: String, CodingKey {
+            case detectionId = "detection_id"
+            case monitorIndex = "monitor_index"
+            case bbox, action
+        }
+    }
+
+    /// Один tumor-item в batch'е. Координаты bbox — crop-space (привязка к
+    /// region'у через индекс в массиве localize[]).
+    struct TumorBatchItem: Encodable {
+        let regionIndex: Int
+        let detectionId: UUID?
+        let bbox: BboxDTO?
+        let action: String
+        enum CodingKeys: String, CodingKey {
+            case regionIndex = "region_index"
+            case detectionId = "detection_id"
+            case bbox, action
+        }
+    }
+
+    struct BatchAnnotationsRequest: Encodable {
+        let screenId: UUID
+        let localize: [LocalizeBatchItem]
+        let tumors: [TumorBatchItem]
+        enum CodingKeys: String, CodingKey {
+            case screenId = "screen_id"
+            case localize, tumors
+        }
+    }
+
+    struct BatchAnnotationsResponse: Decodable {
+        let localize: [BatchLocalizeAnnotation]
+        let tumors: [BatchTumorAnnotation]
+    }
+
+    struct BatchLocalizeAnnotation: Decodable {
+        let id: UUID
+        let action: String
+        let correctionType: String?
+        let trainingWeight: Double
+        enum CodingKeys: String, CodingKey {
+            case id, action
+            case correctionType = "correction_type"
+            case trainingWeight = "training_weight"
+        }
+    }
+
+    struct BatchTumorAnnotation: Decodable {
+        let id: UUID
+        let action: String
+        let correctionType: String?
+        let trainingWeight: Double
+        enum CodingKeys: String, CodingKey {
+            case id, action
+            case correctionType = "correction_type"
+            case trainingWeight = "training_weight"
+        }
+    }
+
+    func batchAnnotations(_ req: BatchAnnotationsRequest) async throws -> BatchAnnotationsResponse {
+        try await sendJSON(
+            method: "POST", path: "detect/annotations", body: req, authorized: true
+        )
+    }
+
     // MARK: - Detect (Phase 9)
 
     struct DetectRequest: Encodable {
@@ -156,13 +231,20 @@ final class APIClient {
     }
 
     /// Один bbox от модели в координатах исходного screenshot'а (физические
-    /// пиксели, top-left origin).
+    /// пиксели, top-left origin). `detectionId` (Phase 10) ссылается на
+    /// строку `*_detections`, созданную `/detect`. Клиент использует её при
+    /// последующем Approve/Edit, чтобы сервер мог посчитать correction_type.
     struct BBoxResultDTO: Decodable {
         let x: Int
         let y: Int
         let w: Int
         let h: Int
         let confidence: Double
+        let detectionId: UUID?
+        enum CodingKeys: String, CodingKey {
+            case x, y, w, h, confidence
+            case detectionId = "detection_id"
+        }
     }
 
     /// Один найденный регион + опциональная вложенная опухоль. `tumor.x/y`

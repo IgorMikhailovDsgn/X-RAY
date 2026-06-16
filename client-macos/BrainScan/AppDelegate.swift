@@ -60,7 +60,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         detect.onFinished = { [weak self] in self?.widget?.show() }
         detect.onEdit = { [weak self] prefill in
             guard let self, let widget = self.widget else { return }
-            self.annotate.start(bodyCenter: widget.bodyCenterOnScreen, prefill: prefill)
+            self.annotate.start(
+                bodyCenter: widget.bodyCenterOnScreen,
+                prefill: (region: prefill.region, tumor: prefill.tumor),
+                existingScreenId: prefill.screenId
+            )
+        }
+        detect.onApproved = { [weak self] in
+            guard let widget = self?.widget else { return }
+            ToastController.shared.show(
+                text: "Confirmed",
+                icon: Icon24.check.makeImage(pointSize: 16),
+                iconTint: .systemGreen,
+                near: widget.bodyCenterOnScreen
+            )
         }
         signIn.onSignedIn = { [weak self] in self?.didSignIn() }
         settings.onSignOut = { [weak self] in self?.signOut() }

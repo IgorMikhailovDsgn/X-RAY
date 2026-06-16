@@ -4,15 +4,28 @@ import Foundation
 /// дисплея (origin в его верхнем-левом углу, y растёт вниз — UI-семантика).
 /// `monitorIndex` — индекс дисплея, на котором нарисован bbox; нужен для записи
 /// в БД и конвертации в physical-пиксели этого монитора.
+///
+/// `originalDetectionId` (Phase 10) — детекция, на основе которой bbox попал в
+/// модель через Detect→Edit prefill. Сохраняется сквозь все изменения (drag,
+/// resize); при удалении модель копирует значение в `dismissedDetections`,
+/// чтобы Mark-Null/удаление prefill-bbox'а донеслось до сервера как корректировка
+/// (FP/FN-сигнал). `nil` для bbox'ов, нарисованных юзером с нуля.
 struct Bbox: Identifiable, Equatable {
     let id: UUID
     var rect: CGRect
     var monitorIndex: Int
+    var originalDetectionId: UUID?
 
-    init(id: UUID = UUID(), rect: CGRect, monitorIndex: Int) {
+    init(
+        id: UUID = UUID(),
+        rect: CGRect,
+        monitorIndex: Int,
+        originalDetectionId: UUID? = nil
+    ) {
         self.id = id
         self.rect = rect
         self.monitorIndex = monitorIndex
+        self.originalDetectionId = originalDetectionId
     }
 }
 

@@ -46,8 +46,8 @@ final class DetectOverlayController {
         mainView?.clearHUD()
         for prediction in result.predictions {
             views[prediction.monitorIndex]?.setPredictions(
-                region: prediction.regions,
-                tumor: prediction.tumors
+                region: prediction.regions.map(\.region),
+                tumor: prediction.regions.compactMap(\.tumor)
             )
         }
     }

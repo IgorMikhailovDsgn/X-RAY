@@ -34,6 +34,12 @@ final class AnnotationModel {
     /// Вызывается после любой мутации состояния — UI перерисовывается.
     var onChange: (() -> Void)?
 
+    /// Phase 10: prefill-детекции, чьи bbox удалены пользователем (Mark Null
+    /// region/tumor или ручное удаление). Используются при Send'е, чтобы
+    /// донести FP-сигнал серверу как `corrected + bbox=NULL`.
+    private(set) var dismissedRegionDetections: [DismissedDetection] = []
+    private(set) var dismissedTumorDetections: [DismissedDetection] = []
+
     init(entryMode: AnnotationEntryMode = .annotate,
          regionState: EntityState = .empty,
          tumorState: EntityState = .empty) {
@@ -154,6 +160,10 @@ final class AnnotationModel {
     // MARK: - Mark Null
 
     func markNullRegion() {
+        // Phase 10: сохраняем originalDetectionId всех уходящих bbox (region + tumor),
+        // чтобы FP-сигнал не потерялся.
+        dismissRegions(regionState.bboxes)
+        dismissTumors(tumorState.bboxes)
         regionState = .null
         tumorState = .null   // каскад: опухоль не может существовать без региона
         activeTool = .none
@@ -164,6 +174,7 @@ final class AnnotationModel {
 
     func markNullTumor() {
         guard tumorControlsEnabled else { return }
+        dismissTumors(tumorState.bboxes)
         tumorState = .null
         activeTool = .none
         notify()
@@ -172,7 +183,14 @@ final class AnnotationModel {
     // MARK: - Сброс (× и удаление bbox)
 
     /// × Region или удаление последнего region bbox → Region=empty, Tumor=empty (каскад).
-    func clearRegion() {
+    /// `dismissingPrefill: true` фиксирует уходящие prefill-bbox как dismissed —
+    /// FP-сигнал улетит на сервер. `false` для «очисти и забудь» (clearRegion
+    /// тулбара ×, обычно перед новой ручной разметкой — сигнал не нужен).
+    func clearRegion(dismissingPrefill: Bool = true) {
+        if dismissingPrefill {
+            dismissRegions(regionState.bboxes)
+            dismissTumors(tumorState.bboxes)
+        }
         regionState = .empty
         tumorState = .empty
         activeTool = .none
@@ -181,8 +199,11 @@ final class AnnotationModel {
         notify()
     }
 
-    func clearTumor() {
+    func clearTumor(dismissingPrefill: Bool = true) {
         guard tumorControlsEnabled else { return }
+        if dismissingPrefill {
+            dismissTumors(tumorState.bboxes)
+        }
         tumorState = .empty
         activeTumorId = nil
         if activeTool == .addTumor { activeTool = .none }
@@ -191,10 +212,13 @@ final class AnnotationModel {
 
     /// Удаление конкретного bbox по id с применением каскада, если ушёл последний region.
     func removeBbox(id: UUID) {
-        if regionState.bboxes.contains(where: { $0.id == id }) {
+        if let box = regionState.bboxes.first(where: { $0.id == id }) {
+            dismissRegions([box])
             let remaining = regionState.bboxes.filter { $0.id != id }
             if remaining.isEmpty {
-                clearRegion()          // последний region ушёл → каскадный сброс tumor
+                // last region gone → каскад. Bbox уже dismissed выше; не дублируем,
+                // поэтому clearRegion вызывается с dismissingPrefill: false.
+                clearRegion(dismissingPrefill: false)
             } else {
                 regionState = .bboxes(remaining)
                 if activeRegionId == id { activeRegionId = remaining.last?.id }
@@ -202,11 +226,36 @@ final class AnnotationModel {
             }
             return
         }
-        if tumorState.bboxes.contains(where: { $0.id == id }) {
+        if let box = tumorState.bboxes.first(where: { $0.id == id }) {
+            dismissTumors([box])
             let remaining = tumorState.bboxes.filter { $0.id != id }
             tumorState = remaining.isEmpty ? .empty : .bboxes(remaining)
             if activeTumorId == id { activeTumorId = remaining.last?.id }
             notify()
+        }
+    }
+
+    // MARK: - Dismiss helpers (Phase 10)
+
+    private func dismissRegions(_ boxes: [Bbox]) {
+        for b in boxes where b.originalDetectionId != nil {
+            dismissedRegionDetections.append(
+                DismissedDetection(
+                    detectionId: b.originalDetectionId!,
+                    monitorIndex: b.monitorIndex
+                )
+            )
+        }
+    }
+
+    private func dismissTumors(_ boxes: [Bbox]) {
+        for b in boxes where b.originalDetectionId != nil {
+            dismissedTumorDetections.append(
+                DismissedDetection(
+                    detectionId: b.originalDetectionId!,
+                    monitorIndex: b.monitorIndex
+                )
+            )
         }
     }
 

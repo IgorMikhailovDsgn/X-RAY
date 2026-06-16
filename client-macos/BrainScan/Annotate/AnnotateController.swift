@@ -14,6 +14,10 @@ final class AnnotateController {
     var onSent: ((SyncManager.SubmitOutcome) -> Void)?
 
     private var model = AnnotationModel(entryMode: .annotate)
+    /// Phase 10: screen_id того screenshot row, по которому шёл `/detect`. Если
+    /// задан, `send()` отправляет batch'ем без повторного capture'а. Cold-start
+    /// Annotate оставляет nil → legacy путь (prepare + per-item POSTs).
+    private var existingScreenId: UUID?
     private let toolbar = AnnotateToolbarView()
     private let overlay = OverlayController()
     private let panel: NSPanel
@@ -83,8 +87,35 @@ final class AnnotateController {
     /// `bodyCenter` — центр тела Default-виджета в экранных координатах: тулбар
     /// появляется на том же месте (морф «на месте»). `prefill` ≠ nil → вход через
     /// Edit (после автодетекции): Region/Tumor предзаполнены, entryMode = .edit.
+    /// `existingScreenId` — id screenshot row уже на сервере (когда заходим из
+    /// /detect). Без него (cold-start) сессия делает свежий capture при Send.
     func start(bodyCenter: NSPoint,
-               prefill: (region: EntityState, tumor: EntityState)? = nil) {
+               prefill: (region: EntityState, tumor: EntityState)? = nil,
+               existingScreenId: UUID? = nil) {
+        self.existingScreenId = existingScreenId
+        // Gate: Screen Recording — иначе оверлей покажет «чёрный фон» и Send
+        // упадёт на капчуре. Промпт повторяется на каждый клик, пока юзер не
+        // даст доступ (см. PermissionGate).
+        PermissionGate.ensureScreenRecording { [weak self] granted in
+            guard let self else { return }
+            guard granted else {
+                ToastController.shared.show(
+                    text: "Enable Screen Recording in System Settings",
+                    icon: Icon24.discard.makeImage(pointSize: 16),
+                    iconTint: .systemOrange,
+                    near: bodyCenter
+                )
+                self.onFinished?(bodyCenter)
+                return
+            }
+            self.beginAnnotateSession(bodyCenter: bodyCenter, prefill: prefill)
+        }
+    }
+
+    private func beginAnnotateSession(
+        bodyCenter: NSPoint,
+        prefill: (region: EntityState, tumor: EntityState)?
+    ) {
         if let prefill {
             model = AnnotationModel(entryMode: .edit,
                                     regionState: prefill.region, tumorState: prefill.tumor)
@@ -259,10 +290,17 @@ final class AnnotateController {
         isSending = true
         toolbar.setSendLoading("Sending…")
         let geometry = overlay.snapshots
-        let payload = UploadPayload.from(model: model)
+        let payload = UploadPayload.from(model: model, existingScreenId: existingScreenId)
         sendTask = Task { [weak self] in
             do {
-                let prepared = try await AnnotationSubmitter.prepare(geometry: geometry)
+                // Если есть existingScreenId — Phase 10 batch-путь не требует
+                // повторного capture'а; пропускаем prepare(), снимков=пустой.
+                let prepared: PreparedSnapshots
+                if payload.existingScreenId != nil {
+                    prepared = [:]
+                } else {
+                    prepared = try await AnnotationSubmitter.prepare(geometry: geometry)
+                }
                 let outcome = try await SyncManager.shared.submitOrQueue(
                     payload: payload, snapshots: prepared
                 )

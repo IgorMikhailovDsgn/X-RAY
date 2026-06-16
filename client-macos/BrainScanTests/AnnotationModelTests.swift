@@ -150,3 +150,92 @@ final class AnnotationModelTests: XCTestCase {
         XCTAssertEqual(calls, 2)
     }
 }
+
+// MARK: - Phase 10: dismissed detections (FP-сигнал)
+
+extension AnnotationModelTests {
+    private func prefillBox(detectionId: UUID, monitor: Int = 0) -> Bbox {
+        Bbox(
+            rect: CGRect(x: 0, y: 0, width: 100, height: 100),
+            monitorIndex: monitor,
+            originalDetectionId: detectionId
+        )
+    }
+
+    func test_remove_prefill_region_records_dismissed_detection() {
+        let detId = UUID()
+        let m = AnnotationModel(
+            entryMode: .edit,
+            regionState: .bboxes([prefillBox(detectionId: detId)]),
+            tumorState: .null
+        )
+        m.removeBbox(id: m.regionState.bboxes.first!.id)
+        XCTAssertEqual(m.dismissedRegionDetections.count, 1)
+        XCTAssertEqual(m.dismissedRegionDetections[0].detectionId, detId)
+    }
+
+    func test_mark_null_region_records_all_dismissed_region_and_tumor_detections() {
+        let r1 = UUID()
+        let r2 = UUID()
+        let t1 = UUID()
+        let m = AnnotationModel(
+            entryMode: .edit,
+            regionState: .bboxes([
+                prefillBox(detectionId: r1),
+                prefillBox(detectionId: r2),
+            ]),
+            tumorState: .bboxes([prefillBox(detectionId: t1)])
+        )
+        m.markNullRegion()
+        XCTAssertEqual(
+            Set(m.dismissedRegionDetections.map(\.detectionId)),
+            [r1, r2]
+        )
+        // Каскад: tumors тоже dismissed.
+        XCTAssertEqual(
+            Set(m.dismissedTumorDetections.map(\.detectionId)),
+            [t1]
+        )
+    }
+
+    func test_mark_null_tumor_records_only_tumor_detections() {
+        let r1 = UUID()
+        let t1 = UUID()
+        let m = AnnotationModel(
+            entryMode: .edit,
+            regionState: .bboxes([prefillBox(detectionId: r1)]),
+            tumorState: .bboxes([prefillBox(detectionId: t1)])
+        )
+        m.markNullTumor()
+        XCTAssertTrue(m.dismissedRegionDetections.isEmpty)
+        XCTAssertEqual(m.dismissedTumorDetections.count, 1)
+        XCTAssertEqual(m.dismissedTumorDetections[0].detectionId, t1)
+    }
+
+    func test_cold_start_remove_bbox_does_not_record_dismissed() {
+        // Bbox без originalDetectionId (юзер нарисовал с нуля) — не попадает
+        // в dismissed-список, так как нечего корректировать на сервере.
+        let m = AnnotationModel()
+        m.appendRegionBbox(box(0, 0, 100, 100))
+        let id = m.regionState.bboxes[0].id
+        m.removeBbox(id: id)
+        XCTAssertTrue(m.dismissedRegionDetections.isEmpty)
+    }
+
+    func test_mixed_touch_preserves_prefill_id_after_update() {
+        // Ключевой кейс: prefill bbox двигается → originalDetectionId
+        // сохраняется в обновлённой версии bbox'а. При Send AnnotationSubmitter
+        // отправит его как corrected + detection_id.
+        let detId = UUID()
+        let m = AnnotationModel(
+            entryMode: .edit,
+            regionState: .bboxes([prefillBox(detectionId: detId)]),
+            tumorState: .null
+        )
+        let id = m.regionState.bboxes[0].id
+        m.updateBbox(id: id, rect: CGRect(x: 50, y: 50, width: 100, height: 100))
+        XCTAssertEqual(m.regionState.bboxes[0].originalDetectionId, detId)
+        XCTAssertEqual(m.regionState.bboxes[0].rect.origin.x, 50)
+        XCTAssertTrue(m.dismissedRegionDetections.isEmpty)
+    }
+}

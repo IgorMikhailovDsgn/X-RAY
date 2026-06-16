@@ -86,6 +86,16 @@ final class DetectActionsToolbarView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Включает/выключает interaction Approve-кнопки на время сетевого запроса.
+    /// Простое затемнение без spinner'а — Approve обычно отрабатывает быстро.
+    func setApproveLoading(_ loading: Bool) {
+        approveButton.alphaValue = loading ? 0.6 : 1.0
+        confirmButton.alphaValue = loading ? 0.6 : 1.0
+        editButton.alphaValue = loading ? 0.6 : 1.0
+        approveButton.onClick = loading ? nil : { [weak self] in self?.onApprove?() }
+        confirmButton.onClick = loading ? nil : { [weak self] in self?.onApprove?() }
+    }
+
     /// Конфигурация во время Detecting — только Discard.
     func configureDetecting() {
         setArranged([discardButton])
@@ -97,8 +107,9 @@ final class DetectActionsToolbarView: NSView {
     /// редактирование списка — в Edit → Annotate.
     func configure(result: DetectResult) {
         let prediction = result.predictions.first
-        let regionBox = prediction?.regions.first
-        let tumorBox = prediction?.tumors.first
+        let firstDetected = prediction?.regions.first
+        let regionBox = firstDetected?.region
+        let tumorBox = firstDetected?.tumor
 
         var views: [NSView] = [backButton, sepAfterBack]
         if let regionBox {

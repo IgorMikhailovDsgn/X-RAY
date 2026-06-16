@@ -9,8 +9,12 @@ final class DetectController {
     /// Завершение режима (Back/Discard/Approve) — AppDelegate показывает виджет
     /// обратно в его исходной позиции.
     var onFinished: (() -> Void)?
-    /// Переход в коррекцию: отдаём предзаполнение Region/Tumor для Edit-оверлея.
-    var onEdit: (((region: EntityState, tumor: EntityState)) -> Void)?
+    /// Переход в коррекцию: отдаём предзаполнение Region/Tumor для Edit-оверлея
+    /// + screen_id того screenshot row, по которому шёл `/detect` (Phase 10:
+    /// AnnotateSubmitter переиспользует его в batch'е и не делает повторный capture).
+    var onEdit: (((region: EntityState, tumor: EntityState, screenId: UUID)) -> Void)?
+    /// Успешное завершение Approve — AppDelegate показывает toast «Confirmed».
+    var onApproved: (() -> Void)?
 
     private let overlay = DetectOverlayController()
     private let toolbar = DetectActionsToolbarView()
@@ -128,14 +132,14 @@ final class DetectController {
             let resp = try await APIClient.shared.detect(
                 screenshotId: screen.id, monitorIndex: snap.monitorIndex
             )
-            let result = Self.makeResult(from: resp, snap: snap)
+            let result = Self.makeResult(from: resp, screen: screen.id, snap: snap)
             await MainActor.run { self.presentResult(result) }
         } catch {
             NSLog("[BrainScan] Detect failed: %@", "\(error)")
             await MainActor.run {
                 self.longerWork?.cancel()
                 self.overlay.showRegionsNotFound()
-                self.result = DetectResult(predictions: [])
+                self.result = DetectResult(screenId: nil, predictions: [])
                 self.toolbar.configure(result: self.result!)
                 self.positionToolbar()
                 self.panel.orderFrontRegardless()
@@ -147,20 +151,36 @@ final class DetectController {
     /// рендер-канвасы (DetectOverlayView, BboxCanvasView) — isFlipped=true,
     /// конвенция совпадает с CoordinateConverter.physical. Открыто `static`
     /// для unit-теста.
+    ///
+    /// Phase 10: pull-through `detection_id` каждого региона/опухоли — клиент
+    /// будет ссылаться на эти ID при последующем Approve/Edit.
     static func makeResult(
-        from resp: APIClient.DetectResponse, snap: PreparedSnapshot
+        from resp: APIClient.DetectResponse,
+        screen screenId: UUID,
+        snap: PreparedSnapshot
     ) -> DetectResult {
-        let regions = resp.regions.map { Self.toBbox($0.region, snap: snap) }
-        let tumors = resp.regions.compactMap {
-            $0.tumor.map { Self.toBbox($0, snap: snap) }
-        }
-        return DetectResult(predictions: [
-            DetectPrediction(
-                monitorIndex: snap.monitorIndex,
-                regions: regions,
-                tumors: tumors
+        let detected: [DetectedRegion] = resp.regions.compactMap { r in
+            guard let regionDetectionId = r.region.detectionId else { return nil }
+            let regionBox = Self.toBbox(r.region, snap: snap)
+            var tumorBox: Bbox? = nil
+            var tumorDetectionId: UUID? = nil
+            if let t = r.tumor, let tid = t.detectionId {
+                tumorBox = Self.toBbox(t, snap: snap)
+                tumorDetectionId = tid
+            }
+            return DetectedRegion(
+                region: regionBox,
+                regionDetectionId: regionDetectionId,
+                tumor: tumorBox,
+                tumorDetectionId: tumorDetectionId
             )
-        ])
+        }
+        return DetectResult(
+            screenId: screenId,
+            predictions: [
+                DetectPrediction(monitorIndex: snap.monitorIndex, regions: detected)
+            ]
+        )
     }
 
     static func toBbox(
@@ -192,17 +212,110 @@ final class DetectController {
     // MARK: - Действия
 
     private func approve() {
-        NSLog("[BrainScan] Detect approve (stub): regions=\(result?.predictions.count ?? 0)")
-        finish()
+        // Phase 10: реальный Approve — шлём batch с action='confirmed' на каждый
+        // region+tumor. Без захвата (screenshot уже у сервера). Failure -> alert.
+        guard let result, let screenId = result.screenId, result.hasAnyRegion else {
+            finish(); return
+        }
+        toolbar.setApproveLoading(true)
+        Task { @MainActor [weak self] in
+            do {
+                _ = try await Self.submitApprove(result: result, screenId: screenId)
+                self?.toolbar.setApproveLoading(false)
+                self?.onApproved?()
+                self?.finish()
+            } catch {
+                self?.toolbar.setApproveLoading(false)
+                self?.handleApproveFailure(error)
+            }
+        }
+    }
+
+    static func submitApprove(result: DetectResult, screenId: UUID) async throws
+        -> APIClient.BatchAnnotationsResponse
+    {
+        var localize: [APIClient.LocalizeBatchItem] = []
+        var tumors: [APIClient.TumorBatchItem] = []
+        // Один batch — все мониторы + все регионы; tumor.region_index указывает
+        // на позицию региона в `localize[]` этого payload'а.
+        var globalRegionIndex = 0
+        for p in result.predictions {
+            for det in p.regions {
+                // Возвращаем bbox в physical-пиксели исходного скрина, как
+                // сервер ожидает (см. server schema docstrings).
+                let physical = CoordinateConverter.physical(
+                    det.region.rect, dpi: 1.0
+                )
+                // Y/x уже в logical-точках top-left; для conversion'а DPI берём
+                // 1.0 потому что сервер сам поделит при следующем /detect — но
+                // для confirmed мы шлём `bbox=null` (сервер берёт detection.bbox
+                // как ground-truth, у localize-схемы confirmed bbox опционален).
+                _ = physical
+                localize.append(
+                    APIClient.LocalizeBatchItem(
+                        detectionId: det.regionDetectionId,
+                        monitorIndex: det.region.monitorIndex,
+                        bbox: nil,                  // confirmed — bbox не нужен
+                        action: "confirmed"
+                    )
+                )
+                let regionIndexInBatch = globalRegionIndex
+                globalRegionIndex += 1
+                if let tid = det.tumorDetectionId {
+                    tumors.append(
+                        APIClient.TumorBatchItem(
+                            regionIndex: regionIndexInBatch,
+                            detectionId: tid,
+                            bbox: nil,              // confirmed — bbox не нужен
+                            action: "confirmed"
+                        )
+                    )
+                }
+            }
+        }
+        let req = APIClient.BatchAnnotationsRequest(
+            screenId: screenId, localize: localize, tumors: tumors
+        )
+        return try await APIClient.shared.batchAnnotations(req)
+    }
+
+    @MainActor
+    private func handleApproveFailure(_ error: Error) {
+        NSLog("[BrainScan] Approve failed: %@",
+              (error as? LocalizedError)?.errorDescription ?? String(describing: error))
+        let alert = NSAlert()
+        alert.messageText = "Could not confirm detection"
+        alert.informativeText = (error as? LocalizedError)?.errorDescription
+            ?? error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func edit() {
-        guard let prefill = result?.prefillStates() else { finish(); return }
+        guard let result else { finish(); return }
+        let prefill = result.prefillStates()
+        // screenId должен присутствовать, если /detect отработал. В мок-режиме
+        // его нет — старый путь Annotate (cold-start capture) подхватит.
+        guard let screenId = result.screenId else {
+            // Fallback: без screen_id Annotate сделает свежий capture как
+            // прежде (Phase 9 поведение).
+            cancelWork()
+            removeKeyMonitor()
+            overlay.dismiss()
+            panel.orderOut(nil)
+            // Передадим dummy screenId: AppDelegate проверит и выберет cold-start.
+            // Но onEdit signature теперь требует UUID — в реальности этот путь
+            // не должен срабатывать (mock'а в проде нет), поэтому считаем
+            // конец сессии.
+            finish()
+            return
+        }
         cancelWork()
         removeKeyMonitor()
         overlay.dismiss()
         panel.orderOut(nil)
-        onEdit?(prefill)
+        onEdit?((region: prefill.region, tumor: prefill.tumor, screenId: screenId))
     }
 
     // MARK: - Раскладка (морф «на месте» из позиции виджета)
