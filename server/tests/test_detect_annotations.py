@@ -351,6 +351,57 @@ async def test_batch_multiple_tumors_independent_actions(
     assert body["tumors"][1]["training_weight"] == pytest.approx(3.2)
 
 
+async def test_batch_confirmed_with_null_bbox_reuses_image_and_attaches_tumor(
+    client, auth_headers, sessionmaker,
+):
+    """Approve-флоу: клиент шлёт region.bbox=nil + action=confirmed (детекту
+    верит). Сервер должен переиспользовать localize_images из /detect (FK для
+    tumor-аннотации), а не падать с «no localize_image».
+    """
+    screen_id = await _make_screenshot(client, auth_headers)
+    region_bbox = {"x": 0, "y": 0, "w": 100, "h": 100}
+    tumor_bbox = {"x": 10, "y": 10, "w": 20, "h": 20}
+    loc_det_id, tum_det_id = await _seed_detected_region(
+        sessionmaker, screen_id,
+        region_bbox=region_bbox, region_confidence=0.95,
+        tumor_bbox=tumor_bbox, tumor_confidence=0.7,
+    )
+
+    resp = await client.post(
+        "/api/v1/detect/annotations",
+        headers=auth_headers,
+        json={
+            "screen_id": screen_id,
+            "localize": [
+                {
+                    "detection_id": str(loc_det_id),
+                    "monitor_index": 0,
+                    "bbox": None,           # клиент: «модели верю»
+                    "action": "confirmed",
+                },
+            ],
+            "tumors": [
+                {
+                    "region_index": 0,
+                    "detection_id": str(tum_det_id),
+                    "bbox": None,
+                    "action": "confirmed",
+                },
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["localize"][0]["action"] == "confirmed"
+    assert body["tumors"][0]["action"] == "confirmed"
+
+    # localize_images один, ровно тот же, что создал /detect.
+    async with sessionmaker() as s:
+        loc_imgs = (await s.execute(select(LocalizeImage))).scalars().all()
+        assert len(loc_imgs) == 1
+        assert loc_imgs[0].detection_id == loc_det_id
+
+
 async def test_batch_atomic_on_invalid_detection_id(
     client, auth_headers, sessionmaker,
 ):

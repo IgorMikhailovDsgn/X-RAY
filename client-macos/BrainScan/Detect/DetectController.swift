@@ -26,7 +26,18 @@ final class DetectController {
     /// и сюда же возвращается виджет.
     private var bodyCenter: NSPoint = .zero
 
+    // MARK: - Phase 10: dropdown для multi-bbox
+    private let dropdownPanel: NSPanel
+    private let listView = BboxListView()
+    /// Какой список открыт сейчас: nil — закрыт, true — tumor, false — region.
+    private var openTumorList: Bool?
+    /// Текущие активные bbox каждой сущности (1-based для plate). Меняются
+    /// при клике на элемент dropdown'а.
+    private var activeRegionIndex = 1
+    private var activeTumorIndex = 1
+
     private let dotOverflow: CGFloat = 8
+    private let dropdownGap: CGFloat = 8
 
     init() {
         panel = NSPanel(
@@ -44,10 +55,27 @@ final class DetectController {
         panel.isMovableByWindowBackground = true   // тулбар можно перетаскивать
         panel.contentView = toolbar
 
+        dropdownPanel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: BboxListView.plateWidth, height: 56),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false
+        )
+        dropdownPanel.isFloatingPanel = true
+        dropdownPanel.level = panel.level
+        dropdownPanel.isOpaque = false
+        dropdownPanel.backgroundColor = .clear
+        dropdownPanel.hasShadow = false
+        dropdownPanel.hidesOnDeactivate = false
+        dropdownPanel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        dropdownPanel.contentView = listView
+
         toolbar.onBack = { [weak self] in self?.finish() }
         toolbar.onApprove = { [weak self] in self?.approve() }
         toolbar.onEdit = { [weak self] in self?.edit() }
         toolbar.onDiscard = { [weak self] in self?.finish() }
+        toolbar.onRegionToggleList = { [weak self] in self?.toggleList(forTumor: false) }
+        toolbar.onTumorToggleList = { [weak self] in self?.toggleList(forTumor: true) }
+        listView.onSelect = { [weak self] id in self?.selectBbox(id: id) }
     }
 
     // MARK: - Lifecycle
@@ -96,6 +124,7 @@ final class DetectController {
     private func finish() {
         cancelWork()
         removeKeyMonitor()
+        closeDropdown()
         overlay.dismiss()
         panel.orderOut(nil)
         onFinished?()
@@ -199,14 +228,87 @@ final class DetectController {
     private func presentResult(_ r: DetectResult) {
         longerWork?.cancel()
         result = r
+        // Сброс активного индекса к первой записи каждой сущности при свежем
+        // результате — иначе старый индекс мог бы выйти за границы.
+        activeRegionIndex = 1
+        activeTumorIndex = 1
+        closeDropdown()
         if r.hasAnyRegion {
             overlay.showResult(r)
         } else {
             overlay.showRegionsNotFound()
         }
-        toolbar.configure(result: r)
+        toolbar.configure(
+            result: r,
+            activeRegionIndex: activeRegionIndex,
+            activeTumorIndex: activeTumorIndex
+        )
         positionToolbar()
         panel.orderFrontRegardless()
+    }
+
+    // MARK: - Multi-bbox dropdown
+
+    private func toggleList(forTumor: Bool) {
+        if openTumorList == forTumor {
+            closeDropdown()
+        } else {
+            openTumorList = forTumor
+            updateDropdown()
+        }
+    }
+
+    private func updateDropdown() {
+        guard let isTumor = openTumorList, let r = result else {
+            closeDropdown(); return
+        }
+        let boxes = isTumor ? r.allTumorBboxes : r.allRegionBboxes
+        let activeId: UUID?
+        if isTumor {
+            activeId = boxes.indices.contains(activeTumorIndex - 1)
+                ? boxes[activeTumorIndex - 1].id : boxes.first?.id
+        } else {
+            activeId = boxes.indices.contains(activeRegionIndex - 1)
+                ? boxes[activeRegionIndex - 1].id : boxes.first?.id
+        }
+        guard boxes.count >= 2, let anchor = toolbar.navScreenFrame(forTumor: isTumor) else {
+            closeDropdown(); return
+        }
+        listView.setItems(boxes, activeId: activeId, hoveredId: nil, invalid: [:])
+        let width = BboxListView.plateWidth
+        let height = listView.fittingHeight(count: boxes.count)
+        let origin = NSPoint(x: anchor.midX - width / 2, y: anchor.maxY + dropdownGap)
+        dropdownPanel.setFrame(
+            NSRect(origin: origin, size: CGSize(width: width, height: height)),
+            display: true
+        )
+        if dropdownPanel.parent == nil {
+            panel.addChildWindow(dropdownPanel, ordered: .above)
+        }
+        dropdownPanel.orderFrontRegardless()
+        toolbar.setListOpen(forTumor: isTumor, true)
+        toolbar.setListOpen(forTumor: !isTumor, false)
+    }
+
+    private func closeDropdown() {
+        if let isTumor = openTumorList { toolbar.setListOpen(forTumor: isTumor, false) }
+        openTumorList = nil
+        if dropdownPanel.parent != nil { panel.removeChildWindow(dropdownPanel) }
+        dropdownPanel.orderOut(nil)
+    }
+
+    private func selectBbox(id: UUID) {
+        guard let r = result, let isTumor = openTumorList else { return }
+        let boxes = isTumor ? r.allTumorBboxes : r.allRegionBboxes
+        if let idx = boxes.firstIndex(where: { $0.id == id }) {
+            if isTumor { activeTumorIndex = idx + 1 } else { activeRegionIndex = idx + 1 }
+        }
+        toolbar.configure(
+            result: r,
+            activeRegionIndex: activeRegionIndex,
+            activeTumorIndex: activeTumorIndex
+        )
+        closeDropdown()
     }
 
     // MARK: - Действия

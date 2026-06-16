@@ -124,9 +124,16 @@ async def batch_create_annotations(
 
 
 def _validate_cascade(payload: BatchAnnotationsRequest) -> None:
-    """tumor.region_index должен указывать на existing localize-item, у
-    которого есть bbox (НЕ Mark Null). Иначе нет crop'а — куда привязывать
-    опухоль непонятно.
+    """tumor.region_index должен указывать на регион, который реально
+    существует на скрине. Правило:
+
+      - action='confirmed' (с detection_id) → регион есть → tumor OK.
+        Клиент шлёт bbox=None у confirmed, но крип из /detect остаётся
+        валидным якорем для tumor-аннотации.
+      - action='corrected'/'created' + bbox задан → регион есть → tumor OK.
+      - action='corrected'/'created' + bbox=None → Mark Null:
+        регион «не существует» по мнению врача → tumor НЕ OK (семантически
+        опухоль не может жить в отсутствующем регионе).
     """
     n_loc = len(payload.localize)
     for i, t in enumerate(payload.tumors):
@@ -136,7 +143,8 @@ def _validate_cascade(payload: BatchAnnotationsRequest) -> None:
                 details={"region_index": t.region_index, "localize_len": n_loc},
             )
         loc_item = payload.localize[t.region_index]
-        if loc_item.bbox is None:
+        region_exists = loc_item.action == "confirmed" or loc_item.bbox is not None
+        if not region_exists:
             raise ValidationAppError(
                 f"tumors[{i}] points to a Mark-Null region (no crop to attach to)",
                 details={"region_index": t.region_index},
@@ -193,12 +201,10 @@ async def _insert_localize_item(
     session.add(ann)
     await session.flush()
 
-    # Localize_image нужен только если есть bbox (для tumor под-структуры).
-    if bbox_payload is None:
-        return ann, None
-
-    # Если есть detection_id → переиспользуем localize_images, созданный /detect.
-    # (Был INSERT'ен с detection_id=loc_det.id и annotation_id=None.)
+    # Если есть detection_id — у /detect уже был создан localize_images
+    # с этим detection_id (crop в S3). Переиспользуем его независимо от того,
+    # есть ли у клиентской аннотации bbox: для confirmed клиент шлёт bbox=nil,
+    # но crop из /detect остаётся валидным якорем для tumor-аннотаций.
     if item.detection_id is not None:
         from sqlalchemy import select
 
@@ -212,8 +218,11 @@ async def _insert_localize_item(
         if existing is not None:
             return ann, existing
 
-    # Иначе режем crop сами и создаём новый localize_image (cold-start или
-    # /detect-row пропал).
+    # Cold-start / Mark Null без детекции: bbox=None → крепить tumor некуда.
+    if bbox_payload is None:
+        return ann, None
+
+    # Cold-start с bbox: режем crop сами и создаём новый localize_image.
     image_bytes = await get_screen_bytes(item.monitor_index)
     img = await create_localize_image(
         session,

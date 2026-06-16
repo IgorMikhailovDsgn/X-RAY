@@ -11,6 +11,10 @@ final class DetectActionsToolbarView: NSView {
     var onApprove: (() -> Void)?
     var onEdit: (() -> Void)?
     var onDiscard: (() -> Void)?
+    /// Phase 10: клик по шеврону Region/Tumor — открыть выпадающий список всех
+    /// найденных bbox этой сущности. Видим только когда найдено больше одного.
+    var onRegionToggleList: (() -> Void)?
+    var onTumorToggleList: (() -> Void)?
 
     private let outerLayer = CALayer()
     private let innerLayer = CALayer()
@@ -24,8 +28,10 @@ final class DetectActionsToolbarView: NSView {
 
     private let regionPlate = CoordinatePlateView()
     private let regionNullPill = NullPillView(title: "Null Region")
+    private let regionNav = NavView()
     private let tumorPlate = CoordinatePlateView()
     private let tumorNullPill = NullPillView(title: "Null Tumor")
+    private let tumorNav = NavView()
 
     private let approveButton = ActionButtonView(icon: .check, label: "Approve", iconAlwaysOpaque: true)
     private let confirmButton = ActionButtonView(icon: .check, label: "Confirm", iconAlwaysOpaque: true)
@@ -71,6 +77,8 @@ final class DetectActionsToolbarView: NSView {
         confirmButton.onClick = { [weak self] in self?.onApprove?() }
         editButton.onClick = { [weak self] in self?.onEdit?() }
         discardButton.onClick = { [weak self] in self?.onDiscard?() }
+        regionNav.onToggle = { [weak self] in self?.onRegionToggleList?() }
+        tumorNav.onToggle = { [weak self] in self?.onTumorToggleList?() }
 
         regionNullPill.setShowsClear(false)
         tumorNullPill.setShowsClear(false)
@@ -81,6 +89,21 @@ final class DetectActionsToolbarView: NSView {
         size(tumorPlate, w: 126)
         size(regionNullPill, w: 116)
         size(tumorNullPill, w: 116)
+        size(regionNav, w: 28)
+        size(tumorNav, w: 28)
+    }
+
+    /// Возвращает экранный фрейм nav-чеврона (для anchor'а dropdown'а).
+    func navScreenFrame(forTumor: Bool) -> NSRect? {
+        let nav: NavView = forTumor ? tumorNav : regionNav
+        guard nav.superview != nil, let window = nav.window else { return nil }
+        let rectInWindow = nav.convert(nav.bounds, to: nil)
+        return window.convertToScreen(rectInWindow)
+    }
+
+    /// Меняет icon chevron'а на «открыто».
+    func setListOpen(forTumor: Bool, _ open: Bool) {
+        (forTumor ? tumorNav : regionNav).setOpen(open)
     }
 
     @available(*, unavailable)
@@ -102,14 +125,23 @@ final class DetectActionsToolbarView: NSView {
         needsLayout = true
     }
 
-    /// Сборка тулбара под результат детекции. Plate'ы показывают первую
-    /// найденную сущность каждого типа (overlay рисует все); полное
-    /// редактирование списка — в Edit → Annotate.
-    func configure(result: DetectResult) {
-        let prediction = result.predictions.first
-        let firstDetected = prediction?.regions.first
-        let regionBox = firstDetected?.region
-        let tumorBox = firstDetected?.tumor
+    /// Сборка тулбара под результат детекции. Plate показывает активный bbox
+    /// (`activeRegionIndex`/`activeTumorIndex` — 1-based). Если bbox >=2,
+    /// рядом с plate появляется nav-чеврон, который раскрывает выпадающий
+    /// список всех bbox этой сущности (как в Annotate).
+    func configure(
+        result: DetectResult,
+        activeRegionIndex: Int = 1,
+        activeTumorIndex: Int = 1
+    ) {
+        let regions = result.allRegionBboxes
+        let tumors = result.allTumorBboxes
+        let regionBox = regions.indices.contains(activeRegionIndex - 1)
+            ? regions[activeRegionIndex - 1]
+            : regions.first
+        let tumorBox = tumors.indices.contains(activeTumorIndex - 1)
+            ? tumors[activeTumorIndex - 1]
+            : tumors.first
 
         var views: [NSView] = [backButton, sepAfterBack]
         if let regionBox {
@@ -117,6 +149,10 @@ final class DetectActionsToolbarView: NSView {
             regionPlate.configure(rect: regionBox.rect, isActive: false,
                                   isInvalid: false, showsClear: false)
             views.append(regionPlate)
+            if regions.count >= 2 {
+                regionNav.setIndex(max(1, activeRegionIndex))
+                views.append(regionNav)
+            }
         } else {
             views.append(regionNullPill)
         }
@@ -126,6 +162,10 @@ final class DetectActionsToolbarView: NSView {
             tumorPlate.configure(rect: tumorBox.rect, isActive: false,
                                  isInvalid: false, showsClear: false)
             views.append(tumorPlate)
+            if tumors.count >= 2 {
+                tumorNav.setIndex(max(1, activeTumorIndex))
+                views.append(tumorNav)
+            }
         } else {
             views.append(tumorNullPill)
         }
