@@ -33,10 +33,13 @@ RUN uv sync --frozen --no-dev
 
 # GPU-only стек. torch без явного index-url — PyPI-wheel уже CUDA-enabled.
 # uv-venv не содержит pip → ставим через `uv pip install` (target = VIRTUAL_ENV).
-# Версии нестрого пинованы; Phase 8 зафиксирует конкретные при первом обучении.
+# Phase 10: ultralytics жёстко пиним на тот же мажор/минор, что и на CPU-server
+# (8.4.x). WeightedDetectionTrainer subclassит ultralytics.models.yolo.detect.
+# DetectionTrainer; minor-bump'ы могут менять сигнатуру get_dataloader →
+# тестируем на этой версии прежде чем разрешать выше.
 RUN uv pip install --no-cache \
         "torch>=2.5" \
-        "ultralytics>=8.3" \
+        "ultralytics==8.4.*" \
         "opencv-python-headless>=4.10" \
         "pillow>=10.4"
 

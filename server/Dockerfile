@@ -26,7 +26,7 @@ RUN uv sync --frozen --no-dev
 RUN uv pip install --no-cache --python /app/.venv/bin/python \
         --index-url https://download.pytorch.org/whl/cpu \
         --extra-index-url https://pypi.org/simple \
-        torch torchvision ultralytics opencv-python-headless pillow
+        torch torchvision "ultralytics==8.4.*" opencv-python-headless pillow
 
 
 FROM python:3.12-slim AS runtime

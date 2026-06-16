@@ -162,6 +162,23 @@ def _upload_artifacts(
 # --------------------------- YOLO dataset prep ---------------------------
 
 
+def _collect_weights(manifest: dict[str, Any]) -> dict[str, float]:
+    """Phase 10: собирает annotation_id → training_weight из всех split'ов
+    манифеста. Используется `WeightedDetectionTrainer` для построения
+    WeightedRandomSampler'а.
+    """
+    weights: dict[str, float] = {}
+    splits = manifest.get("splits", {})
+    for split in ("train", "val", "test"):
+        for s in splits.get(split, []):
+            ann_id = s.get("annotation_id")
+            if ann_id is None:
+                continue
+            w = float(s.get("training_weight", 1.0))
+            weights[str(ann_id)] = w
+    return weights
+
+
 def _prepare_yolo_dataset(
     manifest: dict[str, Any], workdir: Path, *, class_name: str
 ) -> Path:
@@ -218,6 +235,12 @@ def _prepare_yolo_dataset(
     lines.append("names:")
     lines.append(f"  0: {class_name}")
     data_yaml.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Phase 10: пишем weights.json рядом для WeightedDetectionTrainer.
+    from workers.weighted_training import write_weights_map
+
+    write_weights_map(workdir, _collect_weights(manifest))
+
     logger.info("train: YOLO dataset prepared, splits=%s", non_empty)
     return data_yaml
 
@@ -247,6 +270,12 @@ def _train_yolo(
     """Запускает YOLOv8 train + val. Возвращает (mlflow_run_id, metrics, best_pt)."""
     from ultralytics import YOLO
 
+    from workers.weighted_training import (
+        load_weights_map,
+        make_weighted_trainer_class,
+        weight_stats,
+    )
+
     # Отключаем встроенную MLflow-интеграцию ultralytics — логируем сами, чтобы
     # не плодить дублирующиеся/вложенные runs.
     try:
@@ -256,17 +285,34 @@ def _train_yolo(
     except Exception:  # best-effort: версия ultralytics может отличаться
         logger.warning("train: couldn't disable ultralytics mlflow integration")
 
+    weights_map = load_weights_map(workdir)
+    use_weighted = bool(weights_map) and any(w != 1.0 for w in weights_map.values())
+    trainer_cls = make_weighted_trainer_class(weights_map)
+
     params = {
         "model_type": model_type,
         "dataset_version": version,
         "base_weights": DEFAULT_BASE_WEIGHTS,
         "epochs": DEFAULT_EPOCHS,
         "imgsz": DEFAULT_IMGSZ,
+        "use_weighted_loss": use_weighted,
+        "weight_strategy": "weighted_random_sampler" if use_weighted else "none",
     }
 
     mlflow_ctx = _start_mlflow(model_type, params)
     run_id = mlflow_ctx["run_id"] if mlflow_ctx else None
     try:
+        if mlflow_ctx and weights_map:
+            import mlflow
+
+            stats = weight_stats(weights_map)
+            mlflow.log_metrics({
+                "dataset_weight_mean": stats["mean"],
+                "dataset_weight_max": stats["max"],
+                "dataset_weight_min": stats["min"],
+                "dataset_high_weight_pct": stats["high_pct"],
+            })
+
         model = YOLO(DEFAULT_BASE_WEIGHTS)
         model.train(
             data=str(data_yaml),
@@ -280,6 +326,7 @@ def _train_yolo(
             # иметь детей → DataLoader с workers>0 падает с AssertionError.
             # workers=0 = загрузка данных в самом процессе (без подпроцессов).
             workers=0,
+            trainer=trainer_cls,
         )
         val = model.val(workers=0)  # workers=0: тот же daemon-форк, что и в train
         metrics = {
