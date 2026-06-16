@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,8 @@ class LocalizeDetection(Base):
     bbox: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
+    # 0..1; nullable — на исторических детекциях (до 0007) значения нет.
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     meta_json_path: Mapped[str | None] = mapped_column(String, nullable=True)
     inferred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -65,6 +67,17 @@ class LocalizeAnnotation(Base):
     # dataset'ом (Phase 5b/c). При failed training возвращается в NULL.
     dataset_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("datasets.id"), nullable=True
+    )
+    # Weighted-training сигналы (Phase 10, миграция 0007).
+    # NULL для confirmed/cold-start; для corrected — категория ошибки модели.
+    correction_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    # IoU между detection.bbox и annotation.bbox; полезно для калибровки порогов.
+    iou_with_detection: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Множитель loss-функции в train-loop. >0, дефолт 1.0; денормализованно
+    # хранится прямо в строке аннотации — потребитель (dataset_builder)
+    # пробрасывает в манифест как есть.
+    training_weight: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default=text("1.0")
     )
 
 

@@ -20,6 +20,11 @@ class BBoxResult(BaseModel):
     w: int = Field(ge=1)
     h: int = Field(ge=1)
     confidence: float = Field(ge=0.0, le=1.0)
+    # ID соответствующей `*_detections` строки. nullable — на случай редкого
+    # сценария, когда INSERT детекции откатился (исторически — старые клиенты).
+    # Клиент использует это поле в batch-`/detect/annotations` при отправке
+    # confirmed/corrected.
+    detection_id: uuid.UUID | None = None
 
 
 class RegionPrediction(BaseModel):

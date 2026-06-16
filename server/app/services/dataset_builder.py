@@ -83,6 +83,8 @@ async def _load_localize_samples(session: AsyncSession) -> list[dict[str, Any]]:
                 LocalizeAnnotation.bbox,
                 LocalizeAnnotation.annotator_id,
                 LocalizeAnnotation.monitor_index,
+                LocalizeAnnotation.correction_type,
+                LocalizeAnnotation.training_weight,
                 Screenshot.screen_paths,
             )
             .join(Screenshot, LocalizeAnnotation.screen_id == Screenshot.id)
@@ -111,6 +113,8 @@ async def _load_localize_samples(session: AsyncSession) -> list[dict[str, Any]]:
                 "label": "localize" if r.bbox else "negative",
                 "bbox": r.bbox,
                 "annotator_id": r.annotator_id,
+                "correction_type": r.correction_type,
+                "training_weight": float(r.training_weight),
             }
         )
     return samples
@@ -126,6 +130,8 @@ async def _load_tumor_samples(session: AsyncSession) -> list[dict[str, Any]]:
                 TumorAnnotation.id,
                 TumorAnnotation.bbox,
                 TumorAnnotation.annotator_id,
+                TumorAnnotation.correction_type,
+                TumorAnnotation.training_weight,
                 LocalizeImage.screen_id,
                 LocalizeImage.localize_path,
             )
@@ -150,6 +156,8 @@ async def _load_tumor_samples(session: AsyncSession) -> list[dict[str, Any]]:
                 "label": "tumor" if r.bbox else "negative",
                 "bbox": r.bbox,
                 "annotator_id": r.annotator_id,
+                "correction_type": r.correction_type,
+                "training_weight": float(r.training_weight),
             }
         )
     return samples
@@ -240,6 +248,11 @@ def _manifest_sample(s: dict[str, Any]) -> dict[str, Any]:
         "label": s["label"],
         "bbox": s["bbox"],
         "annotator_id": s["annotator_id"],
+        # Phase 10: per-sample вес и категория ошибки. Тренировка читает
+        # training_weight как множитель loss; correction_type нужен для
+        # breakdown'ов метрик (recall_on_<type>).
+        "correction_type": s.get("correction_type"),
+        "training_weight": s.get("training_weight", 1.0),
     }
 
 
@@ -264,12 +277,17 @@ def _build_manifest_dict(
     test_idx: list[int],
     seed: int,
 ) -> dict[str, Any]:
+    stats_payload = stats.model_dump()
+    # Phase 10: денормализованная сводка по correction_type и weight'ам всего
+    # датасета (train+val+test). MLflow логирует эти числа для A/B-сравнений.
+    stats_payload["by_correction_type"] = _by_correction_type(samples)
+    stats_payload["weight_distribution"] = _weight_distribution(samples)
     return {
         "dataset_id": str(dataset_id),
         "version": version,
         "model_type": model_type,
         "created_at": datetime.now(UTC).isoformat(),
-        "stats": stats.model_dump(),
+        "stats": stats_payload,
         "split_ratio": {
             "train": SPLIT_RATIO[0],
             "val": SPLIT_RATIO[1],
@@ -282,6 +300,42 @@ def _build_manifest_dict(
             "test": [_manifest_sample(samples[i]) for i in test_idx],
         },
         "checksum": _compute_manifest_checksum(samples),
+    }
+
+
+def _by_correction_type(samples: list[dict[str, Any]]) -> dict[str, int]:
+    """Счёт сэмплов по correction_type, с ключом 'none' для NULL."""
+    out: dict[str, int] = {}
+    for s in samples:
+        key = s.get("correction_type") or "none"
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
+def _weight_distribution(samples: list[dict[str, Any]]) -> dict[str, float]:
+    """Mean / median / min / max / p25 / p75 по training_weight."""
+    weights = sorted(float(s.get("training_weight", 1.0)) for s in samples)
+    if not weights:
+        return {"mean": 0.0, "median": 0.0, "min": 0.0, "max": 0.0, "p25": 0.0, "p75": 0.0}
+    n = len(weights)
+
+    def _pct(p: float) -> float:
+        if n == 1:
+            return weights[0]
+        # Линейная интерполяция между ближайшими значениями.
+        idx = p * (n - 1)
+        lo = int(idx)
+        hi = min(lo + 1, n - 1)
+        frac = idx - lo
+        return weights[lo] * (1 - frac) + weights[hi] * frac
+
+    return {
+        "mean": sum(weights) / n,
+        "median": _pct(0.5),
+        "min": weights[0],
+        "max": weights[-1],
+        "p25": _pct(0.25),
+        "p75": _pct(0.75),
     }
 
 

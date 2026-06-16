@@ -44,12 +44,14 @@ class LocalizeAnnotationCreate(BaseModel):
     @model_validator(mode="after")
     def _check_action_combination(self) -> "LocalizeAnnotationCreate":
         # Зеркалит chk_loc_ann_action_combinations из docs/brainscan_schema.sql.
+        # С миграции 0007 corrected допускает bbox=NULL (FP-сигнал: «модель нашла
+        # регион, врач говорит — ничего нет»).
         if self.action == "confirmed":
             if self.detection_id is None:
                 raise ValueError("action='confirmed' requires detection_id")
         elif self.action == "corrected":
-            if self.detection_id is None or self.bbox is None:
-                raise ValueError("action='corrected' requires detection_id and bbox")
+            if self.detection_id is None:
+                raise ValueError("action='corrected' requires detection_id")
         elif self.action == "created":
             # bbox может быть None: NULL = "области нет" (negative, Mark Null).
             if self.detection_id is not None:
@@ -63,6 +65,12 @@ class LocalizeAnnotationResponse(BaseModel):
     detection_id: uuid.UUID | None
     monitor_index: int
     bbox: BBox | None
+    # Финальный action ПОСЛЕ server-side normalize (corrected с IoU≥0.95 →
+    # confirmed). Клиент может отличаться от того, что прислал.
     action: LocalizeAction
     annotator_id: str
     annotated_at: datetime
+    # Weighted-training поля (Phase 10). NULL для confirmed/cold-start.
+    correction_type: str | None = None
+    iou_with_detection: float | None = None
+    training_weight: float = 1.0

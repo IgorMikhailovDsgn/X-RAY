@@ -1,9 +1,13 @@
-"""POST /detect — Phase 9 inference pipeline.
+"""POST /detect — Phase 10 (multi-region + persisted detections).
 
-Inference (`app.services.inference.predict_all`, `crop_png`) мокаем, чтобы
-тесты не тянули torch/ultralytics. Фокус — на endpoint-логике: auth, 404
-на screenshot, 503 без deployed моделей, форма ответа, координаты tumor →
-screen, поддержка нескольких регионов и tumor per-region.
+Inference (`predict_all`, `crop_png`) мокаем, чтобы тесты не тянули
+torch/ultralytics/PIL. Фокус — endpoint-логика: auth, 404 на screenshot,
+503 без deployed моделей, форма ответа, координаты tumor → screen, поддержка
+нескольких регионов и tumor per-region, а также:
+
+- INSERT'ы в `localize_detections` / `tumor_detections` с `confidence`;
+- INSERT'ы в `localize_images` (с `detection_id`, без `annotation_id`);
+- `detection_id` в JSON-ответе.
 """
 
 from __future__ import annotations
@@ -13,11 +17,13 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 
 from app.api.v1 import detect as detect_module
+from app.models.localize import LocalizeDetection, LocalizeImage
 from app.models.mlops import Deployment, Model
 from app.models.screenshot import Screenshot
+from app.models.tumor import TumorDetection
 
 
 async def _seed_screenshot(
@@ -87,16 +93,21 @@ async def test_detect_503_when_no_localize_model(
     assert resp.json()["error"] == "no_model_deployed"
 
 
-# ----- happy paths (inference mocked) -----
+# ----- happy paths (inference + PIL crop mocked) -----
 
 
 @pytest.fixture
 def mock_inference(monkeypatch, fake_s3):
-    """Подменяет S3 download_bytes + inference.predict_all/crop_png — без torch.
+    """Мокаем S3 download_bytes + inference.predict_all + inference.crop_png.
 
-    Возвращает (calls, set_responses): calls — список вызовов predict_all'а
-    как (model_id, image_len); set_responses(seq) — задать последовательность
-    возвращаемых list[bbox] для последующих вызовов.
+    Через `monkeypatch` на `app.services.inference.*` патчим source — оба
+    потребителя (api.v1.detect и services.crops) импортируют crop_png через
+    модуль-namespace, поэтому видят патч.
+
+    Возвращает (calls, set_responses):
+      calls — список (model_id, image_len) каждого predict_all вызова;
+      set_responses(seq) — задать последовательность возвращаемых list[bbox]
+                          для предстоящих вызовов.
     """
     async def fake_download(self, *, bucket, key):
         return b"fake-png-bytes"
@@ -115,8 +126,10 @@ def mock_inference(monkeypatch, fake_s3):
     def fake_crop(image_bytes, bbox):
         return b"fake-crop-png"
 
-    monkeypatch.setattr("app.api.v1.detect.predict_all", fake_predict_all)
-    monkeypatch.setattr(detect_module, "crop_png", fake_crop)
+    monkeypatch.setattr(detect_module, "predict_all", fake_predict_all)
+    monkeypatch.setattr("app.services.inference.crop_png", fake_crop)
+    # api.v1.detect.inference — это alias на модуль, патч выше его подменяет
+    # автоматически (services.inference.crop_png).
 
     def set_responses(*seq: list[dict]) -> None:
         responses.extend(seq)
@@ -150,11 +163,34 @@ async def test_detect_single_region_with_tumor(
     assert body["tumor_model_version"] == "v5"
     assert len(body["regions"]) == 1
     region_pred = body["regions"][0]
-    assert region_pred["region"] == {"x": 10, "y": 20, "w": 100, "h": 80, "confidence": 0.91}
-    # tumor.x/y = region.x/y + local tumor.x/y (15, 26)
-    assert region_pred["tumor"] == {"x": 15, "y": 26, "w": 30, "h": 40, "confidence": 0.77}
-    # Два вызова: localize, потом tumor (один регион → один crop).
+    # region в screen-space + detection_id.
+    assert region_pred["region"]["x"] == 10 and region_pred["region"]["y"] == 20
+    assert region_pred["region"]["w"] == 100 and region_pred["region"]["h"] == 80
+    assert region_pred["region"]["confidence"] == pytest.approx(0.91)
+    assert region_pred["region"]["detection_id"] is not None
+    # tumor: x/y сдвинуты на region.x/y → screen-space.
+    assert region_pred["tumor"]["x"] == 15 and region_pred["tumor"]["y"] == 26
+    assert region_pred["tumor"]["w"] == 30 and region_pred["tumor"]["h"] == 40
+    assert region_pred["tumor"]["confidence"] == pytest.approx(0.77)
+    assert region_pred["tumor"]["detection_id"] is not None
+    # localize + tumor: два predict_all вызова.
     assert len(calls) == 2
+
+    # DB: одна детекция, один localize_image (с detection_id), одна tumor_det.
+    async with sessionmaker() as s:
+        loc_dets = (await s.execute(select(LocalizeDetection))).scalars().all()
+        assert len(loc_dets) == 1
+        assert loc_dets[0].confidence == pytest.approx(0.91)
+        assert loc_dets[0].bbox == {"x": 10, "y": 20, "w": 100, "h": 80}
+        loc_imgs = (await s.execute(select(LocalizeImage))).scalars().all()
+        assert len(loc_imgs) == 1
+        assert loc_imgs[0].detection_id == loc_dets[0].id
+        assert loc_imgs[0].annotation_id is None
+        tum_dets = (await s.execute(select(TumorDetection))).scalars().all()
+        assert len(tum_dets) == 1
+        # tumor_detections.bbox хранится в crop-space (не screen).
+        assert tum_dets[0].bbox == {"x": 5, "y": 6, "w": 30, "h": 40}
+        assert tum_dets[0].confidence == pytest.approx(0.77)
 
 
 async def test_detect_multiple_regions_each_gets_own_tumor_search(
@@ -184,20 +220,30 @@ async def test_detect_multiple_regions_each_gets_own_tumor_search(
     body = resp.json()
     assert len(body["regions"]) == 2
 
-    # Первый регион: с опухолью, координаты сдвинуты на region.x/y.
+    # Первый регион: с опухолью, координаты сдвинуты на region.x/y в JSON.
     first = body["regions"][0]
     assert first["region"]["x"] == 9 and first["region"]["y"] == 173
-    assert first["tumor"] == {
-        "x": 9 + 100, "y": 173 + 50, "w": 80, "h": 60, "confidence": 0.85,
-    }
+    assert first["region"]["detection_id"] is not None
+    assert first["tumor"]["x"] == 9 + 100  # screen-space
+    assert first["tumor"]["y"] == 173 + 50
+    assert first["tumor"]["detection_id"] is not None
 
     # Второй регион: без опухоли.
     second = body["regions"][1]
-    assert second["region"]["x"] == 1448 and second["region"]["y"] == 162
+    assert second["region"]["detection_id"] is not None
     assert second["tumor"] is None
 
     # 1 localize + 2 tumor вызова.
     assert len(calls) == 3
+
+    # DB: 2 localize_detections, 2 localize_images, 1 tumor_detection.
+    async with sessionmaker() as s:
+        loc_dets = (await s.execute(select(LocalizeDetection))).scalars().all()
+        loc_imgs = (await s.execute(select(LocalizeImage))).scalars().all()
+        tum_dets = (await s.execute(select(TumorDetection))).scalars().all()
+        assert len(loc_dets) == 2
+        assert len(loc_imgs) == 2
+        assert len(tum_dets) == 1
 
 
 async def test_detect_no_tumor_model_returns_regions_with_null_tumor(
@@ -220,10 +266,20 @@ async def test_detect_no_tumor_model_returns_regions_with_null_tumor(
     body = resp.json()
     assert len(body["regions"]) == 1
     assert body["regions"][0]["region"]["confidence"] == 0.91
+    assert body["regions"][0]["region"]["detection_id"] is not None
     assert body["regions"][0]["tumor"] is None
     assert body["tumor_model_version"] is None
     # Только localize позвали.
     assert len(calls) == 1
+
+    # DB: localize_detection + localize_image, без tumor_detection.
+    async with sessionmaker() as s:
+        loc_dets = (await s.execute(select(LocalizeDetection))).scalars().all()
+        loc_imgs = (await s.execute(select(LocalizeImage))).scalars().all()
+        tum_dets = (await s.execute(select(TumorDetection))).scalars().all()
+        assert len(loc_dets) == 1
+        assert len(loc_imgs) == 1
+        assert len(tum_dets) == 0
 
 
 async def test_detect_no_regions_when_localize_finds_nothing(
@@ -242,6 +298,13 @@ async def test_detect_no_regions_when_localize_finds_nothing(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["regions"] == []
+
+    # Никаких детекций/crop'ов не пишется.
+    async with sessionmaker() as s:
+        loc_dets = (await s.execute(select(LocalizeDetection))).scalars().all()
+        loc_imgs = (await s.execute(select(LocalizeImage))).scalars().all()
+        assert len(loc_dets) == 0
+        assert len(loc_imgs) == 0
 
 
 async def test_detect_returns_404_when_monitor_not_in_screen_paths(

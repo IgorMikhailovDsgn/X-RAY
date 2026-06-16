@@ -37,6 +37,12 @@ class TumorAnnotationResponse(BaseModel):
     localize_image_id: uuid.UUID
     detection_id: uuid.UUID | None
     bbox: BBox | None
+    # Финальный action ПОСЛЕ server-side normalize (corrected с IoU≥0.95 →
+    # confirmed). Клиент может отличаться от того, что прислал.
     action: TumorAction
     annotator_id: str
     annotated_at: datetime
+    # Weighted-training поля (Phase 10). NULL для confirmed/cold-start.
+    correction_type: str | None = None
+    iou_with_detection: float | None = None
+    training_weight: float = 1.0

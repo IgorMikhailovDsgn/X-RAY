@@ -6,14 +6,21 @@ Pipeline на скриншоте:
      /admin/models/{id}/promote; на запрос берётся последняя prod).
   3. Скачиваем PNG скриншота, гоним через localize → список регионов
      (отсортирован по confidence убыванию).
-  4. Для каждого региона — если tumor-модель есть, кропаем и гоним tumor;
-     tumor.x/y из crop-пространства переводятся обратно в координаты
-     исходного скрина (сдвиг на region.x/y).
-  5. Ответ — DetectResponse.regions = [RegionPrediction(region, tumor?)].
+  4. Для каждого региона: INSERT `localize_detections` с confidence; режем
+     crop, заливаем в S3, создаём `localize_images` (с detection_id, без
+     annotation_id — annotation появится при последующем submit/approve);
+     если tumor-модель задеплоена, гоним crop через tumor → INSERT
+     `tumor_detections` с confidence. Tumor.bbox в `tumor_detections` —
+     в crop-пространстве; в API-ответе уже переведён в screen-пространство
+     для удобства клиента.
+  5. Ответ — DetectResponse.regions = [RegionPrediction(region, tumor?)],
+     причём оба BBoxResult несут `detection_id`. Клиент использует эти ID
+     в batch-`/detect/annotations` при отправке confirmed/corrected.
 
 Inference синхронный/CPU-bound — обёрнут в asyncio.to_thread внутри
 services/inference.py. Веса YOLO lazy-load'ятся при первом запросе и держатся
-в памяти процесса (LRU-cache).
+в памяти процесса (LRU-cache). Детекции (вместе с crop'ами) пишутся в одной
+транзакции вместе с inference; при любом исключении flushed-rows откатываются.
 """
 
 from __future__ import annotations
@@ -26,10 +33,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import CurrentUser, SessionDep, StorageDep
 from app.core.exceptions import AppError
+from app.models.localize import LocalizeDetection
 from app.models.mlops import Deployment, Model
 from app.models.screenshot import Screenshot
-from app.schemas.detect import BBoxResult, DetectRequest, DetectResponse, RegionPrediction
-from app.services.inference import crop_png, predict_all
+from app.models.tumor import TumorDetection
+from app.schemas.detect import (
+    BBoxResult,
+    DetectRequest,
+    DetectResponse,
+    RegionPrediction,
+)
+from app.services import inference
+from app.services.crops import create_localize_image
+from app.services.inference import predict_all
 
 router = APIRouter(tags=["detect"])
 
@@ -93,29 +109,72 @@ async def detect(
 
     predictions: list[RegionPrediction] = []
     for region in regions:
+        region_bbox = {k: region[k] for k in ("x", "y", "w", "h")}
+
+        # Phase 10: персистим детекцию + localize_image + (опц.) tumor_detection.
+        loc_det = LocalizeDetection(
+            screen_id=screen.id,
+            model_id=loc_model.id,
+            monitor_index=payload.monitor_index,
+            bbox=region_bbox,
+            confidence=region["confidence"],
+        )
+        session.add(loc_det)
+        await session.flush()  # нужен loc_det.id для localize_images.detection_id
+
+        loc_img = await create_localize_image(
+            session,
+            storage,
+            screen=screen,
+            monitor_index=payload.monitor_index,
+            bbox=region_bbox,
+            image_bytes=image_bytes,
+            detection_id=loc_det.id,
+            annotation_id=None,
+        )
+        await session.flush()  # для tumor_detections.localize_image_id
+
         tumor_result: BBoxResult | None = None
         if tum_model is not None:
-            crop_bytes = crop_png(image_bytes, region)
-            tumor_in_crop = await predict_all(
+            crop_bytes = inference.crop_png(image_bytes, region_bbox)
+            tumor_in_crop_list = await predict_all(
                 str(tum_model.id), tum_model.artifact_path, crop_bytes
             )
-            if tumor_in_crop:
-                # Берём top-1 опухоль на регион — обычно их 0-1, а если YOLO
-                # дала несколько кандидатов, top-confidence — самый честный
-                # сигнал. Координаты из crop-пространства → в координаты
-                # исходного скрина (сдвиг на region.x/y).
-                top = tumor_in_crop[0]
+            if tumor_in_crop_list:
+                # Top-1 опухоль на регион (см. inference.py: список уже отсортирован).
+                top = tumor_in_crop_list[0]
+                tum_det = TumorDetection(
+                    localize_image_id=loc_img.id,
+                    model_id=tum_model.id,
+                    # bbox хранится в crop-пространстве (см. schema docstring).
+                    bbox={k: top[k] for k in ("x", "y", "w", "h")},
+                    confidence=top["confidence"],
+                )
+                session.add(tum_det)
+                await session.flush()  # нужен tum_det.id для API-ответа
+
+                # API-ответ: координаты в screen-space (сдвиг на region.x/y).
                 tumor_result = BBoxResult(
-                    x=region["x"] + top["x"],
-                    y=region["y"] + top["y"],
+                    x=region_bbox["x"] + top["x"],
+                    y=region_bbox["y"] + top["y"],
                     w=top["w"],
                     h=top["h"],
                     confidence=top["confidence"],
+                    detection_id=tum_det.id,
                 )
-        predictions.append(RegionPrediction(
-            region=BBoxResult(**region),
-            tumor=tumor_result,
-        ))
+
+        predictions.append(
+            RegionPrediction(
+                region=BBoxResult(
+                    **region_bbox,
+                    confidence=region["confidence"],
+                    detection_id=loc_det.id,
+                ),
+                tumor=tumor_result,
+            )
+        )
+
+    await session.commit()
 
     return DetectResponse(
         screenshot_id=payload.screenshot_id,
