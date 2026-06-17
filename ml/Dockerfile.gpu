@@ -1,26 +1,24 @@
 # syntax=docker/dockerfile:1.7
 # BrainScan GPU-worker — Celery worker для очереди `gpu` (train_localize/tumor).
-# Base python:3.12-slim: современные torch-wheels везут CUDA-userspace внутри,
-# а GPU-driver инжектится nvidia-container-runtime (default runtime на хосте).
-# Поэтому отдельный nvidia/cuda base-image не нужен — хватает slim + pip torch.
+# Multi-stage: всё ставим в builder + чистим, копируем готовый venv в slim
+# runtime. Монолитный однослойный образ раньше доходил до ~38 GB — теперь
+# заметно компактнее (multi-stage не лечит размер слоёв builder'а, но финальный
+# образ деплоится один, и его tar/registry-blob становится сильно меньше).
 #
-# Тяжёлые ML-зависимости (torch/ultralytics/opencv) ставятся pip'ом ПОВЕРХ
-# uv-venv, а не через uv lock: CUDA-wheels linux-only, тащить их в
-# кросс-платформенный ml/uv.lock не хочется. Base-deps (celery/boto3/...) —
-# по-прежнему через frozen uv sync.
+# Base python:3.12-slim: torch-wheels с PyPI везут CUDA-userspace внутри, а
+# GPU-driver инжектится nvidia-container-runtime (default runtime на хосте) —
+# отдельный nvidia/cuda base-image не нужен.
 
-FROM python:3.12-slim AS runtime
+# ---------- builder ----------
+
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     VIRTUAL_ENV=/app/.venv \
-    PATH="/app/.venv/bin:$PATH"
-
-# libgl1/libglib — рантайм-зависимости opencv (даже headless тянет libGL).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    PATH="/app/.venv/bin:$PATH" \
+    PIP_NO_CACHE_DIR=1
 
 RUN pip install --no-cache-dir uv==0.5.13
 
@@ -31,21 +29,57 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY ml/ ./
 RUN uv sync --frozen --no-dev
 
-# GPU-only стек. torch без явного index-url — PyPI-wheel уже CUDA-enabled.
-# uv-venv не содержит pip → ставим через `uv pip install` (target = VIRTUAL_ENV).
-# Phase 10: ultralytics жёстко пиним на тот же мажор/минор, что и на CPU-server
-# (8.4.x). WeightedDetectionTrainer subclassит ultralytics.models.yolo.detect.
-# DetectionTrainer; minor-bump'ы могут менять сигнатуру get_dataloader →
-# тестируем на этой версии прежде чем разрешать выше.
+# GPU-only стек. torch без явного index-url — PyPI-wheel уже CUDA-enabled,
+# pull-in'ит nvidia-cudnn-cu12, nvidia-cublas-cu12 и friends (~3-4 GB).
+# Phase 10: ultralytics жёстко пиним на ту же серию (8.4.x). WeightedRandomSampler-
+# хук в trainer'е завязан на сигнатуру build_dataloader'а — minor-bump может
+# сломать; пересобираем образ осознанно.
 RUN uv pip install --no-cache \
         "torch>=2.5" \
         "ultralytics==8.4.*" \
         "opencv-python-headless>=4.10" \
         "pillow>=10.4"
 
-# Запускаемся от root: `chown -R app:app /app` дублировал бы ~7GB venv (torch+
-# cudnn) в отдельный слой и не влезал в 20GB диск эфемерного GPU-бокса. Бокс
-# одноцелевой и изолированный (только worker, ничего наружу) — root приемлем.
+# Strip всего лишнего из venv. Главные источники жира: __pycache__,
+# тесты внутри пакетов, sample-assets ultralytics, NVIDIA include/.
+RUN set -eux; \
+    find /app/.venv -depth -name '__pycache__' -type d -prune -exec rm -rf {} + ; \
+    find /app/.venv -depth -name '*.pyc' -delete ; \
+    find /app/.venv -depth -name '*.pyo' -delete ; \
+    find /app/.venv -depth -name '*.pyi' -delete ; \
+    find /app/.venv -depth -name 'tests' -type d -prune -exec rm -rf {} + ; \
+    find /app/.venv -depth -name 'test' -type d -prune -exec rm -rf {} + ; \
+    find /app/.venv -depth -name 'doc' -type d -prune -exec rm -rf {} + ; \
+    find /app/.venv -depth -name 'docs' -type d -prune -exec rm -rf {} + ; \
+    rm -rf /app/.venv/lib/python*/site-packages/ultralytics/assets ; \
+    # NVIDIA libs: убираем headers (~150 MB) — на рантайме нужен только .so. \
+    find /app/.venv -name '*.h' -path '*/nvidia/*' -delete ; \
+    find /app/.venv -name 'include' -type d -path '*/nvidia/*' \
+        -prune -exec rm -rf {} + ; \
+    rm -rf /root/.cache /tmp/* /var/tmp/*
+
+# ---------- runtime ----------
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
+
+# libgl1/libglib — рантайм-зависимости opencv (даже headless тянет libGL).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+# venv с уже установленными зависимостями и зачищенным мусором.
+COPY --from=builder /app/.venv /app/.venv
+# Сам проект (workers/, datasets/...).
+COPY ml/ ./
+
+# Запускаемся от root: chown -R дублирует ~5GB venv в отдельный слой и не
+# уменьшает image. Бокс одноцелевой и изолированный — root приемлем.
 
 # GPU-worker слушает ТОЛЬКО очередь `gpu`. Без `-B`: beat-scheduler живёт на
 # CPU-worker'е (dev VPS), один на кластер.
