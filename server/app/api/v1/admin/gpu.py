@@ -1,25 +1,36 @@
-"""Admin endpoints для GPU auto-orchestration (Phase 7b): видимость + ручной
-override + master-switch.
+"""Admin endpoints для GPU auto-orchestration (Phase 7b/10): видимость +
+ручной override + master-switch + управление Glance images.
 
-- GET  /admin/gpu/status     — текущий инстанс, demand, флаг автоскейла.
-- PUT  /admin/gpu/autoscale  — вкл/выкл gpu_autoscale_enabled.
-- POST /admin/gpu/up         — форс-провижн (в обход demand).
-- POST /admin/gpu/down       — форс-delete живого инстанса.
+- GET  /admin/gpu/status            — текущий инстанс, demand, флаг автоскейла.
+- PUT  /admin/gpu/autoscale         — вкл/выкл gpu_autoscale_enabled.
+- POST /admin/gpu/up                — форс-провижн (в обход demand).
+- POST /admin/gpu/down              — форс-delete живого инстанса.
+- POST /admin/gpu/snapshot          — снапшотит live root-volume в новый
+                                      Glance image (durable, переживает delete).
+- GET  /admin/gpu/images            — список Glance images проекта.
+- DELETE /admin/gpu/images/{id}     — удаление старого snapshot'а.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+import asyncio
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, status
 from sqlalchemy import func, select
 
 from app.api.v1.deps import AdminUser, SessionDep
 from app.config import settings
+from app.core.exceptions import AppError
 from app.models.gpu import GpuInstance
 from app.models.mlops import Dataset
 from app.schemas.admin import (
+    GlanceImageInfo,
     GpuActionResponse,
     GpuAutoscaleUpdate,
     GpuInstanceInfo,
+    GpuSnapshotRequest,
+    GpuSnapshotResponse,
     GpuStatusResponse,
 )
 from app.services import gpu_provider
@@ -105,3 +116,53 @@ async def gpu_down(session: SessionDep, _: AdminUser) -> GpuActionResponse:
         status=result.pop("status", None),
         detail=result or None,
     )
+
+
+@router.post("/snapshot", response_model=GpuSnapshotResponse)
+async def gpu_snapshot(
+    payload: GpuSnapshotRequest, session: SessionDep, _: AdminUser,
+) -> GpuSnapshotResponse:
+    """Снапшотит root-volume живого инстанса в новый Glance image.
+
+    Селектел снимает snapshot фоном (~10-20 мин на 40GB volume) — статус
+    image держится `queued`/`saving`, потом `active`. Сам инстанс остаётся
+    работать. После того как новый image=`active`, обнови
+    `GPU_BOOT_IMAGE_ID` в `deploy/.env` на VPS и перезапусти `server`/`worker`
+    — следующий `force_up` поднимет инстанс уже с заранее собранным docker-
+    образом внутри (экономит 15+ мин build'а).
+    """
+    live = (
+        await session.execute(
+            select(GpuInstance).where(GpuInstance.status.in_(_LIVE_STATUSES))
+        )
+    ).scalar_one_or_none()
+    if live is None or live.openstack_server_id is None:
+        raise AppError(
+            "no live GPU instance to snapshot",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="no_live_instance",
+        )
+    image_name = payload.name or (
+        f"brainscan-gpu-image-{datetime.now(UTC).strftime('%Y%m%d-%H%M')}"
+    )
+    image_id = await asyncio.to_thread(
+        gpu_provider.create_server_image,
+        live.openstack_server_id,
+        image_name,
+    )
+    return GpuSnapshotResponse(
+        image_id=image_id,
+        image_name=image_name,
+        server_id=live.openstack_server_id,
+    )
+
+
+@router.get("/images", response_model=list[GlanceImageInfo])
+async def list_gpu_images(_: AdminUser) -> list[GlanceImageInfo]:
+    images = await asyncio.to_thread(gpu_provider.list_glance_images)
+    return [GlanceImageInfo(**img) for img in images]
+
+
+@router.delete("/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_gpu_image(image_id: str, _: AdminUser) -> None:
+    await asyncio.to_thread(gpu_provider.delete_image, image_id)

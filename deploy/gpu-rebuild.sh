@@ -10,16 +10,34 @@
 # пересобирает образ и перезапускает worker.
 #
 # Использование:
-#   bash deploy/gpu-rebuild.sh [git_ref]
+#   bash deploy/gpu-rebuild.sh [git_ref] [--snapshot]
+#
+# Флаги:
+#   --snapshot   — после успешной сборки попросить dev-api сделать
+#                  snapshot текущего root-volume → новый Glance image.
+#                  Не апдейтит GPU_BOOT_IMAGE_ID автоматически: имя
+#                  выводится в stdout, переключение делается руками.
 #
 # Переменные окружения:
-#   REPO_DIR    — путь к клону репо (default: /home/brainscan/brainscan).
-#   ENV_FILE    — путь к .env.gpu (default: <REPO_DIR>/deploy/.env.gpu).
-#   MIN_FREE_GB — минимум свободного диска до сборки (default: 10).
+#   REPO_DIR        — путь к клону репо (default: /home/brainscan/brainscan).
+#   ENV_FILE        — путь к .env.gpu (default: <REPO_DIR>/deploy/.env.gpu).
+#   MIN_FREE_GB     — минимум свободного диска до сборки (default: 10).
+#   API_BASE        — dev-api endpoint для snapshot (default: https://dev-api.cfi-messenger.ru/api/v1).
+#   API_EMAIL       — admin login для snapshot (только если задан --snapshot).
+#   API_PASSWORD    — admin password (только если задан --snapshot).
+#   SNAPSHOT_NAME   — кастомное имя Glance image (опционально).
 
 set -euo pipefail
 
-GIT_REF="${1:-main}"
+GIT_REF="main"
+DO_SNAPSHOT=0
+for arg in "$@"; do
+  case "$arg" in
+    --snapshot) DO_SNAPSHOT=1 ;;
+    --*) echo "unknown flag: $arg" >&2; exit 1 ;;
+    *) GIT_REF="$arg" ;;
+  esac
+done
 REPO_DIR="${REPO_DIR:-/home/brainscan/brainscan}"
 COMPOSE_FILE="$REPO_DIR/deploy/docker-compose.gpu.yml"
 ENV_FILE="${ENV_FILE:-$REPO_DIR/deploy/.env.gpu}"
@@ -86,3 +104,30 @@ log "image inventory:"
 docker images --format '  {{.Repository}}:{{.Tag}} {{.Size}}' \
   | grep -E "brainscan-worker-gpu|python:3.12-slim"
 log "disk: $(df -h / | tail -1 | awk '{print $3"/"$2" used"}')"
+
+if [ "$DO_SNAPSHOT" = "1" ]; then
+  : "${API_BASE:=https://dev-api.cfi-messenger.ru/api/v1}"
+  : "${API_EMAIL:?required: API_EMAIL for --snapshot}"
+  : "${API_PASSWORD:?required: API_PASSWORD for --snapshot}"
+  require curl
+  require python3
+
+  log "requesting Glance snapshot via $API_BASE/admin/gpu/snapshot"
+  JWT=$(curl -sS --max-time 15 -X POST "$API_BASE/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$API_EMAIL\",\"password\":\"$API_PASSWORD\"}" \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))')
+  if [ -z "$JWT" ]; then
+    echo "failed to log in to $API_BASE — snapshot aborted" >&2
+    exit 4
+  fi
+  BODY='{}'
+  if [ -n "${SNAPSHOT_NAME:-}" ]; then
+    BODY="{\"name\":\"$SNAPSHOT_NAME\"}"
+  fi
+  RESP=$(curl -sS --max-time 30 -X POST "$API_BASE/admin/gpu/snapshot" \
+    -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
+    -d "$BODY")
+  log "snapshot response: $RESP"
+  log "next: wait until image status='active', then update GPU_BOOT_IMAGE_ID in deploy/.env on the VPS"
+fi

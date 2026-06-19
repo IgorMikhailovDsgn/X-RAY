@@ -114,3 +114,46 @@ def delete_server(server_id: str) -> None:
     conn = _connect()
     # ignore_missing — идемпотентно: повторный delete уже удалённого не падает.
     conn.compute.delete_server(server_id, ignore_missing=True, force=True)
+
+
+def create_server_image(server_id: str, image_name: str) -> str:
+    """Снапшотит root-volume инстанса в новый Glance image. Возвращает image id.
+
+    На стороне Selectel снепшот 40GB volume занимает ~10-20 мин — статус
+    нового image держится `queued`/`saving`, потом `active`. Сам инстанс
+    остаётся работать; кратковременная I/O-пауза возможна.
+
+    Полученный image можно сразу использовать как boot-source для следующего
+    `create_gpu_server` (через `gpu_boot_image_id`), что экономит время
+    инициализации (готовый docker-образ уже внутри volume).
+    """
+    conn = _connect()
+    server = conn.compute.find_server(server_id)
+    if server is None:
+        raise RuntimeError(f"server {server_id} not found")
+    image = conn.compute.create_server_image(server, name=image_name)
+    return image.id
+
+
+def list_glance_images() -> list[dict[str, Any]]:
+    """Все доступные Glance images проекта. Для админ-обзора и cleanup'а
+    устаревших snapshot'ов."""
+    conn = _connect()
+    out: list[dict[str, Any]] = []
+    for img in conn.image.images():
+        out.append({
+            "id": img.id,
+            "name": img.name,
+            "status": img.status,
+            "size": img.size,
+            "created_at": img.created_at,
+            "visibility": img.visibility,
+        })
+    return out
+
+
+def delete_image(image_id: str) -> None:
+    """Удаление Glance image. Используется для cleanup'а старых снапшотов
+    после переключения `gpu_boot_image_id` на новый."""
+    conn = _connect()
+    conn.image.delete_image(image_id, ignore_missing=False)

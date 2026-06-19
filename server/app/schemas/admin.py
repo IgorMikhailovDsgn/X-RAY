@@ -155,6 +155,26 @@ class GpuAutoscaleUpdate(BaseModel):
     enabled: bool
 
 
+class GpuSnapshotRequest(BaseModel):
+    # Опционально: имя нового Glance image. Если пусто — генерируем по дате.
+    name: str | None = None
+
+
+class GpuSnapshotResponse(BaseModel):
+    image_id: str
+    image_name: str
+    server_id: str
+
+
+class GlanceImageInfo(BaseModel):
+    id: str
+    name: str | None
+    status: str
+    size: int | None
+    created_at: str | None
+    visibility: str | None
+
+
 class GpuActionResponse(BaseModel):
     # Свободная форма исхода reconcile/force (action + детали).
     action: str
