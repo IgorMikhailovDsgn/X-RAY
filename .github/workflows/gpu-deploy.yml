@@ -39,19 +39,11 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
+            # Вся логика — в deploy/gpu-rebuild.sh: git pull → prune dangling →
+            # build → up -d → smoke. Скрипт также используется руками после SSH'а
+            # на бокс (`bash deploy/gpu-rebuild.sh`), single source of truth.
             cd /home/brainscan/brainscan
-            git fetch --quiet origin
+            git fetch --quiet origin "${{ inputs.git_ref }}"
             git checkout --quiet "${{ inputs.git_ref }}"
             git pull --quiet origin "${{ inputs.git_ref }}"
-            cd deploy
-            # .env.gpu живёт только на боксе (секреты), не в репо.
-            docker compose -f docker-compose.gpu.yml --env-file .env.gpu build worker-gpu
-            docker compose -f docker-compose.gpu.yml --env-file .env.gpu up -d worker-gpu
-            sleep 8
-            # Smoke: worker отвечает и подписан на gpu-очередь.
-            docker compose -f docker-compose.gpu.yml --env-file .env.gpu exec -T worker-gpu \
-              celery -A workers.celery_app inspect active_queues 2>&1 | grep -q gpu \
-              && echo "GPU worker is up and consuming 'gpu' queue" \
-              || (echo "GPU worker not consuming gpu queue"; \
-                  docker compose -f docker-compose.gpu.yml --env-file .env.gpu logs --tail=40 worker-gpu; \
-                  exit 1)
+            bash deploy/gpu-rebuild.sh "${{ inputs.git_ref }}"
